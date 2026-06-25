@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{Color32, RichText, Stroke};
 
-use crate::backup::{run_backup, BackupProgress, SharedProgress};
+use crate::backup::{rsync_command_string, run_backup, BackupProgress, SharedProgress};
 use crate::config::{Config, SyncJob, SyncMode};
 use crate::drives::{self, Drive};
 use style::*;
@@ -15,6 +15,7 @@ enum Screen {
     DriveSelect,
     PasswordPrompt,
     ConfigEditor,
+    Preview,
     Backup,
     JobEdit(usize),
 }
@@ -68,8 +69,11 @@ impl Default for App {
                 elapsed_secs: 0.0,
                 estimated_total_secs: None,
                 finished: false,
+                cancelled: false,
                 error: None,
                 log_lines: Vec::new(),
+                child_pid: None,
+                paused: false,
             })),
             backup_running: false,
             backup_finished_msg: None,
@@ -233,8 +237,11 @@ impl App {
                 elapsed_secs: 0.0,
                 estimated_total_secs: None,
                 finished: false,
+                cancelled: false,
                 error: None,
                 log_lines: Vec::new(),
+                child_pid: None,
+                paused: false,
             };
         }
 
@@ -291,17 +298,15 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Poll backup progress
         if self.backup_running {
-            let finished = {
+            let (finished, cancelled, err_msg, elapsed_secs) = {
                 let p = self.progress.lock().unwrap();
-                p.finished || p.error.is_some()
+                (p.finished || p.error.is_some(), p.cancelled, p.error.clone(), p.elapsed_secs)
             };
             if finished {
                 self.backup_running = false;
-                let (err_msg, elapsed_secs) = {
-                    let p = self.progress.lock().unwrap();
-                    (p.error.clone(), p.elapsed_secs)
-                };
-                if let Some(err) = err_msg {
+                if cancelled {
+                    self.backup_finished_msg = Some("Backup cancelled.".to_owned());
+                } else if let Some(err) = err_msg {
                     self.backup_finished_msg = Some(format!("Backup failed: {err}"));
                 } else {
                     let elapsed = format_duration(elapsed_secs as u64);
@@ -328,6 +333,7 @@ impl eframe::App for App {
                     Screen::DriveSelect => self.ui_drive_select(ui),
                     Screen::PasswordPrompt => self.ui_password(ui),
                     Screen::ConfigEditor => self.ui_config(ui),
+                    Screen::Preview => self.ui_preview(ui),
                     Screen::Backup => self.ui_backup(ui),
                     Screen::JobEdit(idx) => self.ui_job_edit(ui, idx),
                 }
@@ -560,14 +566,13 @@ impl App {
         ui.separator();
         ui.add_space(8.0);
 
-        // The big backup button
+        // The big backup button → goes to preview first
         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-            let btn = xp_button_ui(ui, "Backup Now", true);
-            if btn.clicked() {
+            if xp_button_ui(ui, "Backup Now", true).clicked() {
                 if self.config_dirty {
                     self.save_config();
                 }
-                self.start_backup();
+                self.screen = Screen::Preview;
             }
         });
 
@@ -672,12 +677,83 @@ impl App {
         });
     }
 
+    fn ui_preview(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Review Backup Commands");
+        ui.separator();
+        ui.add_space(6.0);
+
+        // Build the command strings up front so borrows are released before the buttons
+        let commands: Vec<(String, String)> = match (&self.config, &self.mount_point) {
+            (Some(cfg), Some(mp)) => cfg
+                .jobs
+                .iter()
+                .filter(|j| j.enabled)
+                .map(|j| (j.name.clone(), rsync_command_string(j, mp)))
+                .collect(),
+            _ => {
+                ui.label("No configuration or drive available.");
+                return;
+            }
+        };
+
+        if commands.is_empty() {
+            ui.label("No enabled jobs.");
+        } else {
+            ui.label(
+                RichText::new("These rsync commands will run in order:")
+                    .color(Color32::DARK_GRAY),
+            );
+            ui.add_space(6.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for (name, cmd) in &commands {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(name).strong());
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(30, 30, 30))
+                            .corner_radius(3.0)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(cmd)
+                                            .monospace()
+                                            .size(11.5)
+                                            .color(Color32::from_rgb(200, 240, 200)),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                    }
+                });
+        }
+
+        let any_jobs = !commands.is_empty();
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        let mut run = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            cancel = xp_button_ui(ui, "Cancel", false).clicked();
+            ui.add_space(8.0);
+            ui.add_enabled_ui(any_jobs, |ui| {
+                run = xp_button_ui(ui, "Run Backup", true).clicked();
+            });
+        });
+        if cancel { self.screen = Screen::ConfigEditor; }
+        if run { self.start_backup(); }
+    }
+
     fn ui_backup(&mut self, ui: &mut egui::Ui) {
         ui.heading("Backing Up…");
         ui.separator();
         ui.add_space(8.0);
 
-        let (fraction, job_name, current_file, eta, finished, error, log_lines, elapsed) = {
+        let (fraction, job_name, current_file, eta, finished, cancelled, error, log_lines, elapsed, paused, child_pid) = {
             let p = self.progress.lock().unwrap();
             (
                 p.overall_fraction(),
@@ -685,18 +761,30 @@ impl App {
                 p.current_file.clone(),
                 p.eta_string(),
                 p.finished,
+                p.cancelled,
                 p.error.clone(),
                 p.log_lines.clone(),
                 p.elapsed_secs,
+                p.paused,
+                p.child_pid,
             )
         };
+        let running = !finished && error.is_none();
 
         if let Some(err) = &error {
             ui.colored_label(Color32::RED, format!("Error: {err}"));
         } else if finished {
+            let color = if cancelled {
+                Color32::from_rgb(160, 100, 0)
+            } else {
+                Color32::from_rgb(0, 128, 0)
+            };
             if let Some(msg) = &self.backup_finished_msg {
-                ui.colored_label(Color32::from_rgb(0, 128, 0), msg);
+                ui.colored_label(color, msg);
             }
+        } else if paused {
+            ui.colored_label(Color32::from_rgb(160, 100, 0), "Paused");
+            ui.small(format!("Job: {job_name}"));
         } else {
             ui.label(format!("Job: {job_name}"));
             ui.small(format!("File: {current_file}"));
@@ -781,8 +869,11 @@ impl App {
         });
 
         ui.add_space(8.0);
+
+        let mut do_pause_toggle = false;
+        let mut do_cancel = false;
         ui.horizontal(|ui| {
-            if finished || error.is_some() {
+            if !running {
                 if xp_button_ui(ui, "Back to Config", false).clicked() {
                     self.screen = Screen::ConfigEditor;
                 }
@@ -791,16 +882,37 @@ impl App {
                     self.eject();
                 }
             } else {
-                ui.add_enabled_ui(false, |ui| {
-                    let _ = xp_button_ui(ui, "Back to Config", false);
-                });
-                ui.label(
-                    RichText::new("(backup in progress)")
-                        .small()
-                        .color(Color32::DARK_GRAY),
-                );
+                let pause_label = if paused { "Resume" } else { "Pause" };
+                if xp_button_ui(ui, pause_label, false).clicked() {
+                    do_pause_toggle = true;
+                }
+                ui.add_space(8.0);
+                if xp_button_ui(ui, "Cancel", false).clicked() {
+                    do_cancel = true;
+                }
             }
         });
+
+        if do_pause_toggle {
+            if let Some(pid) = child_pid {
+                let sig = if paused { "CONT" } else { "STOP" };
+                let _ = std::process::Command::new("kill")
+                    .args([&format!("-{sig}"), &pid.to_string()])
+                    .status();
+                self.progress.lock().unwrap().paused = !paused;
+            }
+        }
+        if do_cancel {
+            let mut p = self.progress.lock().unwrap();
+            p.cancelled = true;
+            p.finished = true;
+            if let Some(pid) = p.child_pid {
+                drop(p); // release lock before spawning subprocess
+                let _ = std::process::Command::new("kill")
+                    .args([&pid.to_string()])
+                    .status();
+            }
+        }
 
         let _ = bar_rect;
     }

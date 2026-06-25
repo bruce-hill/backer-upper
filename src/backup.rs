@@ -18,8 +18,11 @@ pub struct BackupProgress {
     pub elapsed_secs: f64,
     pub estimated_total_secs: Option<f64>,
     pub finished: bool,
+    pub cancelled: bool,
     pub error: Option<String>,
     pub log_lines: Vec<String>,
+    pub child_pid: Option<u32>,
+    pub paused: bool,
 }
 
 impl BackupProgress {
@@ -63,6 +66,44 @@ fn format_duration(secs: u64) -> String {
 
 pub type SharedProgress = Arc<Mutex<BackupProgress>>;
 
+/// Build the rsync argument list for one job (without actually running it).
+pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-avz".to_owned(),
+        "--info=progress2".to_owned(),
+        "--no-inc-recursive".to_owned(),
+        "--partial-dir=.rsync-partial".to_owned(),
+    ];
+
+    if job.mode == SyncMode::Backup {
+        args.push("--delete".to_owned());
+    }
+
+    for excl in &job.excludes {
+        args.push(format!("--exclude={excl}"));
+    }
+
+    let dest = drive_root.join(&job.destination);
+    args.push(format!("{}/", job.source.display()));
+    args.push(format!("{}/", dest.display()));
+    args
+}
+
+/// Format the rsync command for a job as a shell-displayable string.
+pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
+    let args = rsync_args(job, drive_root);
+    let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    format!("rsync {}", quoted.join(" "))
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.contains(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '(' | ')' | '&' | '|' | ';' | '<' | '>' | '!' | '#' | '~' | '*' | '?')) {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    } else {
+        s.to_owned()
+    }
+}
+
 pub fn run_backup(
     config: &Config,
     drive_root: &Path,
@@ -83,12 +124,20 @@ pub fn run_backup(
             p.total_jobs = total_jobs;
             p.current_job = 0;
             p.finished = false;
+            p.cancelled = false;
             p.error = None;
+            p.child_pid = None;
+            p.paused = false;
         }
 
         let start = std::time::Instant::now();
 
         for (idx, job) in jobs.iter().enumerate() {
+            // Check for cancellation between jobs
+            if progress.lock().unwrap().cancelled {
+                break;
+            }
+
             {
                 let mut p = progress.lock().unwrap();
                 p.current_job = idx;
@@ -107,24 +156,7 @@ pub fn run_backup(
                 return;
             }
 
-            let mut args: Vec<String> = vec![
-                "-avz".to_owned(),
-                "--info=progress2".to_owned(),
-                "--no-inc-recursive".to_owned(),
-            ];
-
-            if job.mode == SyncMode::Backup {
-                args.push("--delete".to_owned());
-            }
-
-            for excl in &job.excludes {
-                args.push(format!("--exclude={excl}"));
-            }
-
-            // Ensure trailing slash on source so rsync syncs contents
-            let source_str = format!("{}/", job.source.display());
-            args.push(source_str);
-            args.push(format!("{}/", dest.display()));
+            let args = rsync_args(job, &drive_root);
 
             let mut child = match Command::new("rsync")
                 .args(&args)
@@ -139,6 +171,9 @@ pub fn run_backup(
                     return;
                 }
             };
+
+            // Publish PID so the UI can send SIGSTOP/SIGCONT/SIGTERM
+            progress.lock().unwrap().child_pid = Some(child.id());
 
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
@@ -155,14 +190,21 @@ pub fn run_backup(
                 }
             }
 
+            progress.lock().unwrap().child_pid = None;
+
+            let cancelled = progress.lock().unwrap().cancelled;
+
             let status = match child.wait() {
                 Ok(s) => s,
                 Err(e) => {
+                    if cancelled { break; }
                     let mut p = progress.lock().unwrap();
                     p.error = Some(format!("rsync wait error: {e}"));
                     return;
                 }
             };
+
+            if cancelled { break; }
 
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
