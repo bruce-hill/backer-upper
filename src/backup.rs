@@ -242,16 +242,19 @@ pub fn run_backup(
         let _ = std::fs::create_dir_all(&snapshots_dir);
 
         // TODO: support sudo fallback and/or password prompt for machines without doas
-        let snap_status = Command::new("doas")
+        // Use "." as source with current_dir so btrfs finds the subvolume the same
+        // way as running `btrfs subvolume snapshot -r . ./snapshots/DATE` manually.
+        let snap_output = Command::new("doas")
             .args([
                 "btrfs",
                 "subvolume",
                 "snapshot",
                 "-r",
-                drive_root.to_str().unwrap_or("."),
+                ".",
                 snapshots_dir.join(&snapshot_name).to_str().unwrap_or("."),
             ])
-            .status();
+            .current_dir(&drive_root)
+            .output();
 
         let elapsed = start.elapsed().as_secs_f64();
         let mut p = progress.lock().unwrap();
@@ -259,15 +262,42 @@ pub fn run_backup(
         p.elapsed_secs = elapsed;
         p.current_job = total_jobs;
 
-        match snap_status {
+        match snap_output {
             Err(e) => {
                 p.log_lines.push(format!("Warning: btrfs snapshot failed: {e}"));
             }
-            Ok(snap) if !snap.success() => {
-                p.log_lines.push(format!(
-                    "Warning: btrfs snapshot exited {}",
-                    snap.code().unwrap_or(-1)
-                ));
+            Ok(out) if !out.status.success() => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let stderr = stderr.trim();
+                if stderr.is_empty() {
+                    p.log_lines.push(format!(
+                        "Warning: btrfs snapshot exited {}",
+                        out.status.code().unwrap_or(-1)
+                    ));
+                } else {
+                    p.log_lines.push(format!("Warning: btrfs snapshot failed: {stderr}"));
+                }
+                // Diagnostic: mount options for the drive
+                if let Ok(mnt) = Command::new("findmnt")
+                    .args(["--output=TARGET,OPTIONS", "--target", drive_root.to_str().unwrap_or(".")])
+                    .output()
+                {
+                    let out = String::from_utf8_lossy(&mnt.stdout);
+                    let out = out.trim();
+                    if !out.is_empty() {
+                        p.log_lines.push(format!("  mount: {out}"));
+                    }
+                }
+                // Diagnostic: is drive_root a btrfs subvolume, and is it read-only?
+                if let Ok(sv) = Command::new("doas")
+                    .args(["btrfs", "subvolume", "show", drive_root.to_str().unwrap_or(".")])
+                    .output()
+                {
+                    let out = String::from_utf8_lossy(&sv.stdout);
+                    for line in out.lines().take(6) {
+                        p.log_lines.push(format!("  {line}"));
+                    }
+                }
             }
             Ok(_) => {
                 p.log_lines.push(format!("Snapshot created: {snapshot_name}"));
