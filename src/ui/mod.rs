@@ -27,8 +27,8 @@ pub struct App {
     password: String,
     password_error: Option<String>,
     mount_point: Option<PathBuf>,
-    mounted_device: Option<String>,  // original /dev/… used to open the drive
-    mapper_name: Option<String>,     // cleartext D-Bus obj path if LUKS, else None
+    mounted_device: Option<String>, // original /dev/… used to open the drive
+    mapper_name: Option<String>,    // cleartext D-Bus obj path if LUKS, else None
     config: Option<Config>,
     config_dirty: bool,
     progress: SharedProgress,
@@ -300,7 +300,12 @@ impl eframe::App for App {
         if self.backup_running {
             let (finished, cancelled, err_msg, elapsed_secs) = {
                 let p = self.progress.lock().unwrap();
-                (p.finished || p.error.is_some(), p.cancelled, p.error.clone(), p.elapsed_secs)
+                (
+                    p.finished || p.error.is_some(),
+                    p.cancelled,
+                    p.error.clone(),
+                    p.elapsed_secs,
+                )
             };
             if finished {
                 self.backup_running = false;
@@ -310,8 +315,7 @@ impl eframe::App for App {
                     self.backup_finished_msg = Some(format!("Backup failed: {err}"));
                 } else {
                     let elapsed = format_duration(elapsed_secs as u64);
-                    self.backup_finished_msg =
-                        Some(format!("Backup complete in {elapsed}!"));
+                    self.backup_finished_msg = Some(format!("Backup complete in {elapsed}!"));
 
                     if let Some(cfg) = &mut self.config {
                         cfg.last_backup = Some(chrono::Local::now());
@@ -327,7 +331,11 @@ impl eframe::App for App {
         draw_title_bar(ctx);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(XP_BG).inner_margin(egui::Margin::same(12)))
+            .frame(
+                egui::Frame::new()
+                    .fill(XP_BG)
+                    .inner_margin(egui::Margin::same(12)),
+            )
             .show(ctx, |ui| {
                 match self.screen.clone() {
                     Screen::DriveSelect => self.ui_drive_select(ui),
@@ -483,11 +491,7 @@ impl App {
         ui.add_space(4.0);
 
         // Jobs table
-        let jobs_len = self
-            .config
-            .as_ref()
-            .map(|c| c.jobs.len())
-            .unwrap_or(0);
+        let jobs_len = self.config.as_ref().map(|c| c.jobs.len()).unwrap_or(0);
 
         egui::Frame::new()
             .fill(XP_GROUP_BG)
@@ -552,12 +556,9 @@ impl App {
             if let Some(ts) = cfg.last_backup {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!(
-                        "Last backup: {}",
-                        ts.format("%Y-%m-%d %H:%M:%S")
-                    ))
-                    .small()
-                    .color(Color32::DARK_GRAY),
+                    RichText::new(format!("Last backup: {}", ts.format("%Y-%m-%d %H:%M:%S")))
+                        .small()
+                        .color(Color32::DARK_GRAY),
                 );
             }
         }
@@ -568,7 +569,7 @@ impl App {
 
         // The big backup button → goes to preview first
         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-            if xp_button_ui(ui, "Backup Now", true).clicked() {
+            if xp_button_ui(ui, "Next", true).clicked() {
                 if self.config_dirty {
                     self.save_config();
                 }
@@ -605,11 +606,13 @@ impl App {
     }
 
     fn ui_job_edit(&mut self, ui: &mut egui::Ui, idx: usize) {
-        ui.heading(if idx < self.config.as_ref().map(|c| c.jobs.len()).unwrap_or(0) {
-            "Edit Sync Job"
-        } else {
-            "New Sync Job"
-        });
+        ui.heading(
+            if idx < self.config.as_ref().map(|c| c.jobs.len()).unwrap_or(0) {
+                "Edit Sync Job"
+            } else {
+                "New Sync Job"
+            },
+        );
         ui.separator();
         ui.add_space(6.0);
 
@@ -631,7 +634,11 @@ impl App {
 
                 ui.label("Mode:");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.edit_mode, SyncMode::Backup, SyncMode::Backup.label());
+                    ui.radio_value(
+                        &mut self.edit_mode,
+                        SyncMode::Backup,
+                        SyncMode::Backup.label(),
+                    );
                     ui.label(
                         RichText::new(SyncMode::Backup.description())
                             .small()
@@ -642,7 +649,11 @@ impl App {
 
                 ui.label("");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.edit_mode, SyncMode::Media, SyncMode::Media.label());
+                    ui.radio_value(
+                        &mut self.edit_mode,
+                        SyncMode::Media,
+                        SyncMode::Media.label(),
+                    );
                     ui.label(
                         RichText::new(SyncMode::Media.description())
                             .small()
@@ -700,8 +711,7 @@ impl App {
             ui.label("No enabled jobs.");
         } else {
             ui.label(
-                RichText::new("These rsync commands will run in order:")
-                    .color(Color32::DARK_GRAY),
+                RichText::new("These rsync commands will run in order:").color(Color32::DARK_GRAY),
             );
             ui.add_space(6.0);
 
@@ -744,8 +754,12 @@ impl App {
                 run = xp_button_ui(ui, "Run Backup", true).clicked();
             });
         });
-        if cancel { self.screen = Screen::ConfigEditor; }
-        if run { self.start_backup(); }
+        if cancel {
+            self.screen = Screen::ConfigEditor;
+        }
+        if run {
+            self.start_backup();
+        }
     }
 
     fn ui_backup(&mut self, ui: &mut egui::Ui) {
@@ -753,7 +767,19 @@ impl App {
         ui.separator();
         ui.add_space(8.0);
 
-        let (fraction, job_name, current_file, eta, finished, cancelled, error, log_lines, elapsed, paused, child_pid) = {
+        let (
+            fraction,
+            job_name,
+            current_file,
+            eta,
+            finished,
+            cancelled,
+            error,
+            log_lines,
+            elapsed,
+            paused,
+            child_pid,
+        ) = {
             let p = self.progress.lock().unwrap();
             (
                 p.overall_fraction(),
@@ -795,10 +821,8 @@ impl App {
 
         // Progress bar
         let bar_rect = {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 28.0),
-                egui::Sense::hover(),
-            );
+            let (rect, _) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
 
             let painter = ui.painter();
             let bg_color = Color32::from_rgb(220, 220, 220);
@@ -813,7 +837,8 @@ impl App {
             painter.rect_filled(rect, egui::CornerRadius::same(3), bg_color);
 
             let fill_width = rect.width() * fraction;
-            let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_width, rect.height()));
+            let fill_rect =
+                egui::Rect::from_min_size(rect.min, egui::vec2(fill_width, rect.height()));
 
             // Gradient green
             let fill_top = Color32::from_rgb(
@@ -824,16 +849,31 @@ impl App {
             let half_y = fill_rect.center().y;
             painter.rect_filled(
                 egui::Rect::from_min_max(fill_rect.min, egui::pos2(fill_rect.max.x, half_y)),
-                egui::CornerRadius { nw: 3, ne: if fill_width >= rect.width() { 3 } else { 0 }, sw: 0, se: 0 },
+                egui::CornerRadius {
+                    nw: 3,
+                    ne: if fill_width >= rect.width() { 3 } else { 0 },
+                    sw: 0,
+                    se: 0,
+                },
                 fill_top,
             );
             painter.rect_filled(
                 egui::Rect::from_min_max(egui::pos2(fill_rect.min.x, half_y), fill_rect.max),
-                egui::CornerRadius { nw: 0, ne: 0, sw: 3, se: if fill_width >= rect.width() { 3 } else { 0 } },
+                egui::CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 3,
+                    se: if fill_width >= rect.width() { 3 } else { 0 },
+                },
                 fill_color,
             );
 
-            painter.rect_stroke(rect, egui::CornerRadius::same(3), egui::Stroke::new(1.0, XP_BORDER), egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                rect,
+                egui::CornerRadius::same(3),
+                egui::Stroke::new(1.0, XP_BORDER),
+                egui::StrokeKind::Outside,
+            );
 
             let pct_text = format!("{:.0}%", fraction * 100.0);
             painter.text(
@@ -949,15 +989,15 @@ fn drive_row_ui(ui: &mut egui::Ui, drive: &Drive, selected: bool) -> egui::Respo
             painter.rect_filled(rect, egui::CornerRadius::same(3), bg);
         }
 
-        let text_color   = if selected { Color32::WHITE } else { XP_TEXT };
+        let text_color = if selected { Color32::WHITE } else { XP_TEXT };
         let detail_color = if selected {
             Color32::from_rgba_unmultiplied(210, 225, 255, 200)
         } else {
             Color32::from_rgb(80, 95, 130)
         };
 
-        let px = 10.0;   // horizontal pad
-        let py = 8.0;    // top pad
+        let px = 10.0; // horizontal pad
+        let py = 8.0; // top pad
 
         // ── Row 1: name (left) + size (right) ───────────────────────────────
         let name = drive.display_name();
@@ -975,7 +1015,11 @@ fn drive_row_ui(ui: &mut egui::Ui, drive: &Drive, selected: bool) -> egui::Respo
                 detail_color,
             );
             let x = rect.max.x - px - size_galley.size().x;
-            painter.galley(egui::pos2(x, rect.min.y + py + 1.0), size_galley, detail_color);
+            painter.galley(
+                egui::pos2(x, rect.min.y + py + 1.0),
+                size_galley,
+                detail_color,
+            );
         }
 
         // ── Row 2: device path + badges ─────────────────────────────────────
@@ -991,7 +1035,11 @@ fn drive_row_ui(ui: &mut egui::Ui, drive: &Drive, selected: bool) -> egui::Respo
                 detail_color,
             );
             let w = dev_galley.size().x;
-            painter.galley(egui::pos2(rect.min.x + px, row2_y), dev_galley, detail_color);
+            painter.galley(
+                egui::pos2(rect.min.x + px, row2_y),
+                dev_galley,
+                detail_color,
+            );
             w
         } else {
             0.0

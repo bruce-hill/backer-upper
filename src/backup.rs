@@ -69,7 +69,7 @@ pub type SharedProgress = Arc<Mutex<BackupProgress>>;
 /// Build the rsync argument list for one job (without actually running it).
 pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
-        "-avz".to_owned(),
+        "-av".to_owned(),
         "--info=progress2".to_owned(),
         "--no-inc-recursive".to_owned(),
         "--partial-dir=.rsync-partial".to_owned(),
@@ -180,13 +180,29 @@ pub fn run_backup(
                 for line in reader.lines() {
                     let Ok(line) = line else { continue };
                     let elapsed = start.elapsed().as_secs_f64();
-                    parse_rsync_line(&line, &progress, elapsed);
-                    let mut p = progress.lock().unwrap();
-                    p.elapsed_secs = elapsed;
-                    if p.log_lines.len() > 500 {
-                        p.log_lines.remove(0);
+                    // rsync uses \r to overwrite progress on the same terminal line;
+                    // split on \r and parse each segment so the last one wins.
+                    for seg in line.split('\r') {
+                        let seg = seg.trim();
+                        if !seg.is_empty() {
+                            parse_rsync_line(seg, &progress, elapsed);
+                        }
                     }
-                    p.log_lines.push(line);
+                    // For the log, keep only the last \r segment (the final state of that line).
+                    let display = line.split('\r')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .last()
+                        .unwrap_or("")
+                        .to_owned();
+                    if !display.is_empty() {
+                        let mut p = progress.lock().unwrap();
+                        p.elapsed_secs = elapsed;
+                        if p.log_lines.len() > 500 {
+                            p.log_lines.remove(0);
+                        }
+                        p.log_lines.push(display);
+                    }
                 }
             }
 
@@ -221,15 +237,14 @@ pub fn run_backup(
         }
 
         // Create btrfs snapshot
-        let snapshot_name = format!(
-            "snapshot-{}",
-            chrono::Local::now().format("%Y%m%d-%H%M%S")
-        );
-        let snapshots_dir = drive_root.join(".snapshots");
+        let snapshot_name = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let snapshots_dir = drive_root.join("snapshots");
         let _ = std::fs::create_dir_all(&snapshots_dir);
 
-        let snap_status = Command::new("btrfs")
+        // TODO: support sudo fallback and/or password prompt for machines without doas
+        let snap_status = Command::new("doas")
             .args([
+                "btrfs",
                 "subvolume",
                 "snapshot",
                 "-r",
@@ -266,16 +281,20 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
     let trimmed = line.trim();
 
     // Detect xfr lines
+    // Format: "  2,048,576,000  45%  12.34MB/s  0:01:23 (xfr#42, to-chk=100/200)"
     if trimmed.contains("to-chk=") || trimmed.contains("xfr#") {
         if let Some(pct_pos) = trimmed.find('%') {
             let before_pct: &str = &trimmed[..pct_pos];
             let parts: Vec<&str> = before_pct.split_whitespace().collect();
-            if let Some(pct_str) = parts.last() {
-                if let Ok(pct) = pct_str.parse::<f64>() {
+            if parts.len() >= 2 {
+                let bytes_str = parts[parts.len() - 2].replace(',', "");
+                let pct_str = parts[parts.len() - 1];
+                if let (Ok(bytes), Ok(pct)) = (bytes_str.parse::<u64>(), pct_str.parse::<f64>()) {
                     let mut p = progress.lock().unwrap();
-                    // Synthesize bytes from percentage
-                    if p.bytes_total > 0 {
-                        p.bytes_transferred = (p.bytes_total as f64 * pct / 100.0) as u64;
+                    p.bytes_transferred = bytes;
+                    // Derive total from the percentage rsync already computed
+                    if pct > 0.0 {
+                        p.bytes_total = (bytes as f64 * 100.0 / pct) as u64;
                     }
                     // Estimate total time
                     if pct > 1.0 {
@@ -307,20 +326,8 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
         return;
     }
 
-    // Detect byte-count totals from --info=progress2 summary lines
-    // Format: "      2,048,576,000 100%  123.45MB/s    0:00:16 (xfr#1234, ir-chk=0/5678)"
-    if trimmed.contains("ir-chk=") || trimmed.starts_with("Total") {
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if let Some(bytes_str) = parts.first() {
-            let bytes: u64 = bytes_str
-                .replace(',', "")
-                .parse()
-                .unwrap_or(0);
-            if bytes > 0 {
-                let mut p = progress.lock().unwrap();
-                p.bytes_total = bytes;
-            }
-        }
+    // ir-chk= lines are the incremental scan phase — no useful byte totals yet, skip.
+    if trimmed.contains("ir-chk=") {
         return;
     }
 
