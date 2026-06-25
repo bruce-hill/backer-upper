@@ -104,7 +104,4 @@ impl Config {
         Ok(())
     }
 
-    pub fn config_path(drive_root: &Path) -> PathBuf {
-        drive_root.join(CONFIG_FILENAME)
-    }
 }

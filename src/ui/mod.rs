@@ -26,7 +26,8 @@ pub struct App {
     password: String,
     password_error: Option<String>,
     mount_point: Option<PathBuf>,
-    mapper_name: Option<String>,
+    mounted_device: Option<String>,  // original /dev/… used to open the drive
+    mapper_name: Option<String>,     // cleartext D-Bus obj path if LUKS, else None
     config: Option<Config>,
     config_dirty: bool,
     progress: SharedProgress,
@@ -51,6 +52,7 @@ impl Default for App {
             password: String::new(),
             password_error: None,
             mount_point: None,
+            mounted_device: None,
             mapper_name: None,
             config: None,
             config_dirty: false,
@@ -122,10 +124,9 @@ impl App {
         if drive.is_encrypted {
             self.screen = Screen::PasswordPrompt;
         } else {
-            let uuid = drive.uuid.as_deref().unwrap_or("unknown");
-            let mp = drives::default_mount_point(uuid);
-            match drives::mount_drive(&drive.device, &mp) {
-                Ok(()) => {
+            match drives::mount_device(&drive.device) {
+                Ok(mp) => {
+                    self.mounted_device = Some(drive.device.clone());
                     self.mount_point = Some(mp.clone());
                     self.load_config_from(&mp);
                     self.screen = Screen::ConfigEditor;
@@ -142,37 +143,18 @@ impl App {
             return;
         };
 
-        let uuid = drive
-            .uuid
-            .as_deref()
-            .unwrap_or("backer")
-            .replace('-', "");
-        let mapper_name = format!("backer-{}", &uuid[..8.min(uuid.len())]);
-        let mapper_dev = format!("/dev/mapper/{mapper_name}");
-
-        // Unlock LUKS
-        match drives::unlock_luks(&drive.device, &self.password, &mapper_name) {
-            Ok(_) => {
+        match drives::unlock_and_mount(&drive.device, &self.password) {
+            Ok((dm_device, mp)) => {
                 self.password.clear();
                 self.password_error = None;
-            }
-            Err(e) => {
-                self.password_error = Some(format!("Unlock failed: {e}"));
-                return;
-            }
-        }
-
-        // Mount the decrypted device
-        let mp = drives::default_mount_point(&mapper_name);
-        match drives::mount_drive(&mapper_dev, &mp) {
-            Ok(()) => {
-                self.mapper_name = Some(mapper_name);
+                self.mounted_device = Some(drive.device.clone());
+                self.mapper_name = Some(dm_device);
                 self.mount_point = Some(mp.clone());
                 self.load_config_from(&mp);
                 self.screen = Screen::ConfigEditor;
             }
             Err(e) => {
-                self.password_error = Some(format!("Mount failed: {e}"));
+                self.password_error = Some(format!("Unlock failed: {e}"));
             }
         }
     }
@@ -197,6 +179,36 @@ impl App {
             } else {
                 self.config_dirty = false;
                 self.status_msg = Some("Configuration saved.".to_owned());
+            }
+        }
+    }
+
+    fn eject(&mut self) {
+        let result = match (&self.mapper_name, &self.mounted_device) {
+            // LUKS: unmount cleartext object, then lock the original device
+            (Some(cleartext_obj), Some(luks_dev)) => {
+                let r1 = drives::unmount_filesystem(cleartext_obj);
+                let r2 = drives::lock_luks(luks_dev);
+                r1.and(r2)
+            }
+            // Plain: unmount by original device path
+            (None, Some(dev)) => drives::unmount_device(dev),
+            _ => Ok(()),
+        };
+
+        match result {
+            Ok(()) => {
+                self.mount_point = None;
+                self.mounted_device = None;
+                self.mapper_name = None;
+                self.config = None;
+                self.config_dirty = false;
+                self.backup_finished_msg = None;
+                self.screen = Screen::DriveSelect;
+                self.refresh_drives();
+            }
+            Err(e) => {
+                self.status_msg = Some(format!("Eject failed: {e}"));
             }
         }
     }
@@ -310,7 +322,7 @@ impl eframe::App for App {
         draw_title_bar(ctx);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(XP_BG).inner_margin(egui::Margin::same(8)))
+            .frame(egui::Frame::new().fill(XP_BG).inner_margin(egui::Margin::same(12)))
             .show(ctx, |ui| {
                 match self.screen.clone() {
                     Screen::DriveSelect => self.ui_drive_select(ui),
@@ -330,31 +342,26 @@ impl eframe::App for App {
 
 fn draw_title_bar(ctx: &egui::Context) {
     egui::TopBottomPanel::top("title_bar")
-        .exact_height(26.0)
+        .exact_height(30.0)
         .frame(egui::Frame::new().fill(XP_TITLE_BG))
         .show(ctx, |ui| {
+            // Smooth gradient over the full panel rect
+            paint_v_gradient(ui.painter(), ui.max_rect(), XP_TITLE_BG_TOP, XP_TITLE_BG);
+
             ui.horizontal_centered(|ui| {
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 ui.label(
                     RichText::new("Backer-Upper")
                         .color(XP_TITLE_TEXT)
-                        .size(13.0)
+                        .size(14.0)
                         .strong(),
                 );
                 let available = ui.available_width();
-                ui.add_space(available - 28.0);
-                let close_btn = egui::Button::new(
-                    RichText::new("X").color(Color32::WHITE).size(11.0).strong(),
-                )
-                .fill(Color32::from_rgb(196, 32, 32))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(255, 80, 80)))
-                .corner_radius(2.0)
-                .min_size(egui::vec2(20.0, 18.0));
-
-                if ui.add(close_btn).clicked() {
+                ui.add_space(available - 32.0);
+                if xp_close_button_ui(ui).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                ui.add_space(3.0);
+                ui.add_space(4.0);
             });
         });
 }
@@ -370,22 +377,22 @@ impl App {
         if self.drives.is_empty() {
             ui.label("No removable drives detected.");
         } else {
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
+            egui::Frame::new()
+                .fill(XP_GROUP_BG)
+                .stroke(egui::Stroke::new(1.0, XP_BORDER))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
-                    for (i, drive) in self.drives.iter().enumerate() {
-                        let selected = self.selected_drive_idx == Some(i);
-                        let label = format!(
-                            "{} {} {}{}",
-                            drive.display_name(),
-                            drive.size.as_deref().unwrap_or(""),
-                            drive.fstype.as_deref().unwrap_or(""),
-                            if drive.is_encrypted { " [LUKS]" } else { "" },
-                        );
-                        if ui.selectable_label(selected, &label).clicked() {
-                            self.selected_drive_idx = Some(i);
-                        }
-                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(240.0)
+                        .show(ui, |ui| {
+                            for (i, drive) in self.drives.iter().enumerate() {
+                                let selected = self.selected_drive_idx == Some(i);
+                                if drive_row_ui(ui, drive, selected).clicked() {
+                                    self.selected_drive_idx = Some(i);
+                                }
+                            }
+                        });
                 });
         }
 
@@ -451,7 +458,16 @@ impl App {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
-        ui.heading("Backup Configuration");
+        let mut action: Option<ConfigAction> = None;
+
+        ui.horizontal(|ui| {
+            ui.heading("Backup Configuration");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if xp_button_ui(ui, "Eject", false).clicked() {
+                    action = Some(ConfigAction::Eject);
+                }
+            });
+        });
         ui.label(
             RichText::new(format!("Drive: {mp}"))
                 .small()
@@ -466,8 +482,6 @@ impl App {
             .as_ref()
             .map(|c| c.jobs.len())
             .unwrap_or(0);
-
-        let mut action: Option<ConfigAction> = None;
 
         egui::Frame::new()
             .fill(XP_GROUP_BG)
@@ -580,6 +594,7 @@ impl App {
                 }
             }
             Some(ConfigAction::Save) => self.save_config(),
+            Some(ConfigAction::Eject) => self.eject(),
             None => {}
         }
     }
@@ -771,6 +786,10 @@ impl App {
                 if xp_button_ui(ui, "Back to Config", false).clicked() {
                     self.screen = Screen::ConfigEditor;
                 }
+                ui.add_space(8.0);
+                if xp_button_ui(ui, "Eject Drive", false).clicked() {
+                    self.eject();
+                }
             } else {
                 ui.add_enabled_ui(false, |ui| {
                     let _ = xp_button_ui(ui, "Back to Config", false);
@@ -792,6 +811,118 @@ enum ConfigAction {
     ToggleJob(usize, bool),
     AddJob,
     Save,
+    Eject,
+}
+
+fn drive_row_ui(ui: &mut egui::Ui, drive: &Drive, selected: bool) -> egui::Response {
+    let row_height = 52.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_height),
+        egui::Sense::click(),
+    );
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+
+        // Row background
+        let bg = if selected {
+            XP_ACCENT
+        } else if response.hovered() {
+            Color32::from_rgb(215, 228, 252)
+        } else {
+            Color32::TRANSPARENT
+        };
+        if bg != Color32::TRANSPARENT {
+            painter.rect_filled(rect, egui::CornerRadius::same(3), bg);
+        }
+
+        let text_color   = if selected { Color32::WHITE } else { XP_TEXT };
+        let detail_color = if selected {
+            Color32::from_rgba_unmultiplied(210, 225, 255, 200)
+        } else {
+            Color32::from_rgb(80, 95, 130)
+        };
+
+        let px = 10.0;   // horizontal pad
+        let py = 8.0;    // top pad
+
+        // ── Row 1: name (left) + size (right) ───────────────────────────────
+        let name = drive.display_name();
+        let name_galley = painter.layout_no_wrap(
+            name,
+            egui::FontId::new(13.5, egui::FontFamily::Proportional),
+            text_color,
+        );
+        painter.galley(rect.min + egui::vec2(px, py), name_galley, text_color);
+
+        if let Some(size) = &drive.size {
+            let size_galley = painter.layout_no_wrap(
+                size.clone(),
+                egui::FontId::new(12.0, egui::FontFamily::Proportional),
+                detail_color,
+            );
+            let x = rect.max.x - px - size_galley.size().x;
+            painter.galley(egui::pos2(x, rect.min.y + py + 1.0), size_galley, detail_color);
+        }
+
+        // ── Row 2: device path + badges ─────────────────────────────────────
+        let row2_y = rect.min.y + py + 22.0;
+
+        // Only show the device path if it's not the same as the display name
+        let show_device = drive.label.as_deref().unwrap_or("") != drive.device
+            && drive.display_name() != drive.device;
+        let dev_w = if show_device || drive.label.is_none() {
+            let dev_galley = painter.layout_no_wrap(
+                drive.device.clone(),
+                egui::FontId::new(11.0, egui::FontFamily::Monospace),
+                detail_color,
+            );
+            let w = dev_galley.size().x;
+            painter.galley(egui::pos2(rect.min.x + px, row2_y), dev_galley, detail_color);
+            w
+        } else {
+            0.0
+        };
+
+        // Badges: transport, filesystem, LUKS, mounted
+        let mut badges: Vec<(String, Color32)> = Vec::new();
+        if let Some(tran) = &drive.tran {
+            badges.push((tran.to_uppercase(), Color32::from_rgb(49, 106, 197)));
+        }
+        if let Some(fs) = &drive.fstype {
+            // Skip showing the raw fstype for LUKS — we have the LUKS badge for that
+            if fs != "crypto_LUKS" {
+                badges.push((fs.clone(), Color32::from_rgb(80, 100, 80)));
+            }
+        }
+        if drive.is_encrypted {
+            badges.push(("LUKS".into(), Color32::from_rgb(160, 90, 10)));
+        }
+        if drive.is_mounted() {
+            badges.push(("mounted".into(), Color32::from_rgb(35, 130, 55)));
+        }
+
+        let mut bx = rect.min.x + px + dev_w + if dev_w > 0.0 { 8.0 } else { 0.0 };
+        for (label, mut bg_color) in badges {
+            if selected {
+                bg_color = Color32::from_rgba_unmultiplied(255, 255, 255, 55);
+            }
+            let galley = painter.layout_no_wrap(
+                label,
+                egui::FontId::new(10.5, egui::FontFamily::Proportional),
+                Color32::WHITE,
+            );
+            let bpad = egui::vec2(5.0, 2.0);
+            let bsize = galley.size() + bpad * 2.0;
+            let brect = egui::Rect::from_min_size(egui::pos2(bx, row2_y - 1.0), bsize);
+            painter.rect_filled(brect, egui::CornerRadius::same(3), bg_color);
+            painter.galley(brect.min + bpad, galley, Color32::WHITE);
+            bx += bsize.x + 5.0;
+        }
+    }
+
+    response
 }
 
 fn format_duration(secs: u64) -> String {

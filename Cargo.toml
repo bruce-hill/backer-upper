@@ -11,6 +11,7 @@ serde_json = "1"
 toml = "0.8"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+zbus = { version = "4", features = ["blocking"] }
 
 [profile.release]
 opt-level = 3

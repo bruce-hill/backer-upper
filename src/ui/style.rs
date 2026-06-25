@@ -1,13 +1,14 @@
-use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, StrokeKind, Style, Visuals};
+use egui::{Color32, CornerRadius, CursorIcon, FontFamily, FontId, Stroke, StrokeKind, Style, Visuals};
 
-pub const XP_BG: Color32 = Color32::from_rgb(236, 233, 216);
-pub const XP_TITLE_BG: Color32 = Color32::from_rgb(10, 36, 106);
+pub const XP_BG: Color32 = Color32::from_rgb(228, 233, 244);
+pub const XP_TITLE_BG: Color32 = Color32::from_rgb(10, 50, 130);
+pub const XP_TITLE_BG_TOP: Color32 = Color32::from_rgb(72, 138, 218);
 pub const XP_TITLE_TEXT: Color32 = Color32::WHITE;
-pub const XP_BUTTON_FACE: Color32 = Color32::from_rgb(236, 233, 216);
-pub const XP_BUTTON_SHADOW: Color32 = Color32::from_rgb(172, 168, 153);
+pub const XP_BUTTON_FACE: Color32 = Color32::from_rgb(240, 242, 248);
+pub const XP_BUTTON_SHADOW: Color32 = Color32::from_rgb(158, 166, 192);
 pub const XP_BUTTON_HIGHLIGHT: Color32 = Color32::from_rgb(255, 255, 255);
-pub const XP_BUTTON_DARK_SHADOW: Color32 = Color32::from_rgb(113, 111, 100);
-pub const XP_BORDER: Color32 = Color32::from_rgb(172, 168, 153);
+pub const XP_BUTTON_DARK_SHADOW: Color32 = Color32::from_rgb(80, 90, 120);
+pub const XP_BORDER: Color32 = Color32::from_rgb(158, 166, 192);
 pub const XP_GROUP_BG: Color32 = Color32::from_rgb(255, 255, 255);
 pub const XP_TEXT: Color32 = Color32::from_rgb(0, 0, 0);
 pub const XP_ACCENT: Color32 = Color32::from_rgb(49, 106, 197);
@@ -15,10 +16,10 @@ pub const XP_ACCENT: Color32 = Color32::from_rgb(49, 106, 197);
 pub fn apply_xp_style(ctx: &egui::Context) {
     let mut style = Style::default();
 
-    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-    style.spacing.button_padding = egui::vec2(8.0, 3.0);
-    style.spacing.window_margin = egui::Margin::same(6);
-    style.spacing.indent = 16.0;
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.window_margin = egui::Margin::same(10);
+    style.spacing.indent = 18.0;
 
     let mut visuals = Visuals::light();
     visuals.panel_fill = XP_BG;
@@ -37,12 +38,12 @@ pub fn apply_xp_style(ctx: &egui::Context) {
     visuals.widgets.inactive.corner_radius = CornerRadius::same(3);
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, XP_BUTTON_SHADOW);
 
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(246, 244, 236);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(220, 230, 248);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, XP_TEXT);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(3);
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, XP_ACCENT);
 
-    visuals.widgets.active.bg_fill = Color32::from_rgb(210, 208, 200);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(180, 195, 225);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0, XP_TEXT);
     visuals.widgets.active.corner_radius = CornerRadius::same(3);
     visuals.widgets.active.bg_stroke = Stroke::new(1.0, XP_BUTTON_DARK_SHADOW);
@@ -57,23 +58,23 @@ pub fn apply_xp_style(ctx: &egui::Context) {
     style.text_styles = [
         (
             egui::TextStyle::Heading,
-            FontId::new(14.0, FontFamily::Proportional),
+            FontId::new(16.0, FontFamily::Proportional),
         ),
         (
             egui::TextStyle::Body,
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(13.0, FontFamily::Proportional),
         ),
         (
             egui::TextStyle::Button,
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(13.0, FontFamily::Proportional),
         ),
         (
             egui::TextStyle::Small,
-            FontId::new(10.0, FontFamily::Proportional),
+            FontId::new(11.0, FontFamily::Proportional),
         ),
         (
             egui::TextStyle::Monospace,
-            FontId::new(11.0, FontFamily::Monospace),
+            FontId::new(12.0, FontFamily::Monospace),
         ),
     ]
     .into();
@@ -81,17 +82,25 @@ pub fn apply_xp_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Smooth vertical gradient fill using vertex-colored mesh.
+pub fn paint_v_gradient(painter: &egui::Painter, rect: egui::Rect, top: Color32, bottom: Color32) {
+    use egui::epaint::{Mesh, Vertex, WHITE_UV};
+    let mut mesh = Mesh::default();
+    mesh.vertices.push(Vertex { pos: rect.left_top(),     uv: WHITE_UV, color: top });
+    mesh.vertices.push(Vertex { pos: rect.right_top(),    uv: WHITE_UV, color: top });
+    mesh.vertices.push(Vertex { pos: rect.left_bottom(),  uv: WHITE_UV, color: bottom });
+    mesh.vertices.push(Vertex { pos: rect.right_bottom(), uv: WHITE_UV, color: bottom });
+    mesh.indices.extend_from_slice(&[0, 1, 2, 1, 3, 2]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 /// Draw a gradient button that looks 3D like Windows XP.
-pub fn xp_button_ui(
-    ui: &mut egui::Ui,
-    label: &str,
-    big: bool,
-) -> egui::Response {
-    let font_size = if big { 18.0 } else { 12.0 };
+pub fn xp_button_ui(ui: &mut egui::Ui, label: &str, big: bool) -> egui::Response {
+    let font_size = if big { 18.0 } else { 13.0 };
     let padding = if big {
-        egui::vec2(24.0, 10.0)
+        egui::vec2(28.0, 12.0)
     } else {
-        egui::vec2(8.0, 3.0)
+        egui::vec2(10.0, 5.0)
     };
 
     let galley = ui.fonts(|f| {
@@ -104,45 +113,25 @@ pub fn xp_button_ui(
 
     let desired_size = galley.size() + padding * 2.0;
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&response);
         let painter = ui.painter();
+        let cr = CornerRadius::same(3);
 
-        let corner_radius = CornerRadius::same(3);
-
-        // Base fill with gradient effect
         let (top_color, bot_color) = if response.is_pointer_button_down_on() {
-            (Color32::from_rgb(210, 208, 200), Color32::from_rgb(196, 193, 184))
+            (Color32::from_rgb(185, 196, 225), Color32::from_rgb(165, 178, 215))
         } else if response.hovered() {
-            (Color32::from_rgb(255, 253, 245), Color32::from_rgb(236, 233, 218))
+            (Color32::from_rgb(235, 242, 255), Color32::from_rgb(200, 218, 248))
         } else {
-            (Color32::from_rgb(255, 255, 255), Color32::from_rgb(218, 214, 200))
+            (Color32::from_rgb(255, 255, 255), Color32::from_rgb(215, 220, 238))
         };
 
-        let half_y = rect.center().y;
-
-        let top_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, half_y));
-        let bot_rect = egui::Rect::from_min_max(egui::pos2(rect.min.x, half_y), rect.max);
-
-        painter.rect_filled(
-            top_rect,
-            CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 },
-            top_color,
-        );
-        painter.rect_filled(
-            bot_rect,
-            CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 },
-            bot_color,
-        );
+        paint_v_gradient(painter, rect, top_color, bot_color);
 
         // Outer border
-        painter.rect_stroke(
-            rect,
-            corner_radius,
-            Stroke::new(1.0, XP_BUTTON_SHADOW),
-            StrokeKind::Outside,
-        );
+        painter.rect_stroke(rect, cr, Stroke::new(1.0, XP_BUTTON_SHADOW), StrokeKind::Outside);
 
         if response.is_pointer_button_down_on() {
             painter.line_segment(
@@ -154,59 +143,79 @@ pub fn xp_button_ui(
                 Stroke::new(1.0, XP_BUTTON_DARK_SHADOW),
             );
         } else {
-            // Highlight top-left
+            // Inner highlight top-left
             painter.line_segment(
-                [
-                    rect.left_top() + egui::vec2(1.0, 1.0),
-                    rect.right_top() + egui::vec2(-1.0, 1.0),
-                ],
+                [rect.left_top() + egui::vec2(1.0, 1.0), rect.right_top() + egui::vec2(-1.0, 1.0)],
                 Stroke::new(1.0, XP_BUTTON_HIGHLIGHT),
             );
             painter.line_segment(
-                [
-                    rect.left_top() + egui::vec2(1.0, 1.0),
-                    rect.left_bottom() + egui::vec2(1.0, -1.0),
-                ],
+                [rect.left_top() + egui::vec2(1.0, 1.0), rect.left_bottom() + egui::vec2(1.0, -1.0)],
                 Stroke::new(1.0, XP_BUTTON_HIGHLIGHT),
             );
-            // Shadow bottom-right
+            // Inner shadow bottom-right
             painter.line_segment(
-                [
-                    rect.right_bottom() + egui::vec2(-1.0, -1.0),
-                    rect.left_bottom() + egui::vec2(1.0, -1.0),
-                ],
+                [rect.right_bottom() + egui::vec2(-1.0, -1.0), rect.left_bottom() + egui::vec2(1.0, -1.0)],
                 Stroke::new(1.0, XP_BUTTON_DARK_SHADOW),
             );
             painter.line_segment(
-                [
-                    rect.right_bottom() + egui::vec2(-1.0, -1.0),
-                    rect.right_top() + egui::vec2(-1.0, 1.0),
-                ],
+                [rect.right_bottom() + egui::vec2(-1.0, -1.0), rect.right_top() + egui::vec2(-1.0, 1.0)],
                 Stroke::new(1.0, XP_BUTTON_DARK_SHADOW),
             );
         }
 
-        // Label
         let text_offset = if response.is_pointer_button_down_on() {
             egui::vec2(1.0, 1.0)
         } else {
             egui::vec2(0.0, 0.0)
         };
-        let text_color = visuals.text_color();
         painter.galley(
             rect.center() - galley.size() / 2.0 + text_offset,
             galley,
-            text_color,
+            visuals.text_color(),
         );
 
         if big && response.has_focus() {
-            painter.rect_stroke(
-                rect.shrink(3.0),
-                corner_radius,
-                Stroke::new(1.0, XP_BUTTON_DARK_SHADOW),
-                StrokeKind::Inside,
+            painter.rect_stroke(rect.shrink(3.0), cr, Stroke::new(1.0, XP_BUTTON_DARK_SHADOW), StrokeKind::Inside);
+        }
+    }
+
+    response
+}
+
+/// Close button with a red gradient and a painted X (no Unicode needed).
+pub fn xp_close_button_ui(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::vec2(22.0, 20.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let cr = CornerRadius::same(3);
+
+        let (top_color, bot_color) = if response.is_pointer_button_down_on() {
+            (Color32::from_rgb(160, 20, 20), Color32::from_rgb(130, 10, 10))
+        } else if response.hovered() {
+            (Color32::from_rgb(240, 80, 80), Color32::from_rgb(200, 30, 30))
+        } else {
+            (Color32::from_rgb(220, 60, 60), Color32::from_rgb(175, 20, 20))
+        };
+
+        paint_v_gradient(painter, rect, top_color, bot_color);
+        painter.rect_stroke(rect, cr, Stroke::new(1.0, Color32::from_rgb(255, 100, 100)), StrokeKind::Outside);
+
+        if !response.is_pointer_button_down_on() {
+            painter.line_segment(
+                [rect.left_top() + egui::vec2(1.0, 1.0), rect.right_top() + egui::vec2(-1.0, 1.0)],
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 180, 180, 120)),
             );
         }
+
+        // Paint X with two diagonal lines
+        let m = 6.0;
+        let x_rect = rect.shrink(m);
+        let stroke = Stroke::new(2.0, Color32::WHITE);
+        painter.line_segment([x_rect.left_top(), x_rect.right_bottom()], stroke);
+        painter.line_segment([x_rect.right_top(), x_rect.left_bottom()], stroke);
     }
 
     response
