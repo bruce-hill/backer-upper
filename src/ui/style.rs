@@ -184,7 +184,7 @@ pub fn xp_button_ui(ui: &mut egui::Ui, label: &str, big: bool) -> egui::Response
 
 /// Close button with a red gradient and a painted X (no Unicode needed).
 pub fn xp_close_button_ui(ui: &mut egui::Ui) -> egui::Response {
-    let size = egui::vec2(22.0, 20.0);
+    let size = egui::vec2(20.0, 20.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
@@ -202,13 +202,6 @@ pub fn xp_close_button_ui(ui: &mut egui::Ui) -> egui::Response {
 
         paint_v_gradient(painter, rect, top_color, bot_color);
         painter.rect_stroke(rect, cr, Stroke::new(1.0, Color32::from_rgb(255, 100, 100)), StrokeKind::Outside);
-
-        if !response.is_pointer_button_down_on() {
-            painter.line_segment(
-                [rect.left_top() + egui::vec2(1.0, 1.0), rect.right_top() + egui::vec2(-1.0, 1.0)],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 180, 180, 120)),
-            );
-        }
 
         // Paint X with two diagonal lines
         let m = 6.0;
