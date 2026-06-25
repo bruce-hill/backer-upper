@@ -120,6 +120,14 @@ impl App {
         if drive.is_mounted() {
             let mp = PathBuf::from(drive.mountpoint.as_deref().unwrap_or("/"));
             self.mount_point = Some(mp.clone());
+            // For an already-unlocked LUKS drive, drive.device is the cleartext block device
+            // (e.g. /dev/mapper/luks-...). Store it as mapper_name for udisksctl unmount.
+            if let Some(luks_parent) = &drive.luks_parent {
+                self.mapper_name = Some(drive.device.clone());
+                self.mounted_device = Some(luks_parent.clone());
+            } else {
+                self.mounted_device = Some(drive.device.clone());
+            }
             self.load_config_from(&mp);
             self.screen = Screen::ConfigEditor;
             return;
@@ -189,16 +197,23 @@ impl App {
 
     fn eject(&mut self) {
         let result = match (&self.mapper_name, &self.mounted_device) {
-            // LUKS: unmount cleartext object, then lock the original device
-            (Some(cleartext_obj), Some(luks_dev)) => {
-                let r1 = drives::unmount_filesystem(cleartext_obj);
-                let r2 = drives::lock_luks(luks_dev);
-                r1.and(r2)
+            // LUKS: unmount cleartext device, then lock the container
+            (Some(cleartext_dev), Some(luks_dev)) => {
+                drives::udisksctl_unmount(cleartext_dev).and_then(|()| {
+                    drives::udisksctl_lock(luks_dev)
+                })
             }
-            // Plain: unmount by original device path
-            (None, Some(dev)) => drives::unmount_device(dev),
+            // Plain: unmount by device path
+            (None, Some(dev)) => drives::udisksctl_unmount(dev),
             _ => Ok(()),
         };
+
+        // Power off so the drive disappears from the file browser. Best-effort.
+        if result.is_ok() {
+            if let Some(dev) = self.mounted_device.clone() {
+                let _ = drives::udisksctl_power_off(&dev);
+            }
+        }
 
         match result {
             Ok(()) => {

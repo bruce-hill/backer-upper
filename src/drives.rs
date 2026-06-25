@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -15,6 +15,8 @@ pub struct Drive {
     pub size: Option<String>,
     pub mountpoint: Option<String>,
     pub is_encrypted: bool,
+    /// For an already-unlocked LUKS crypt device, the /dev/... path of the LUKS container.
+    pub luks_parent: Option<String>,
     pub model: Option<String>,
     pub vendor: Option<String>,
     pub tran: Option<String>,
@@ -72,7 +74,7 @@ pub fn list_removable_drives() -> Result<Vec<Drive>> {
     let mut drives = Vec::new();
     if let Some(devices) = json["blockdevices"].as_array() {
         for dev in devices {
-            collect_drives(dev, false, &DiskMeta::default(), &mut drives);
+            collect_drives(dev, false, &DiskMeta::default(), None, &mut drives);
         }
     }
     Ok(drives)
@@ -91,6 +93,7 @@ fn collect_drives(
     dev: &serde_json::Value,
     parent_hotplug: bool,
     parent_meta: &DiskMeta,
+    parent_device: Option<&str>,
     out: &mut Vec<Drive>,
 ) {
     let hotplug = is_hotplug(dev) || parent_hotplug;
@@ -106,12 +109,14 @@ fn collect_drives(
         parent_meta.clone()
     };
 
+    let dev_path = dev["path"].as_str().unwrap_or_default();
+
     let children = dev["children"].as_array();
     let has_children = children.map(|c| !c.is_empty()).unwrap_or(false);
 
     if let Some(kids) = children {
         for child in kids {
-            collect_drives(child, hotplug, &meta, out);
+            collect_drives(child, hotplug, &meta, Some(dev_path), out);
         }
     }
 
@@ -128,8 +133,14 @@ fn collect_drives(
 
     let fstype = str_field(dev, "fstype");
     let is_encrypted = fstype.as_deref() == Some("crypto_LUKS") || dev_type == "crypt";
+    // For an already-unlocked crypt device, record the LUKS container so eject can lock it.
+    let luks_parent = if dev_type == "crypt" {
+        parent_device.map(str::to_owned)
+    } else {
+        None
+    };
 
-    let device = dev["path"].as_str().unwrap_or_default().to_owned();
+    let device = dev_path.to_owned();
     if device.is_empty() { return; }
 
     out.push(Drive {
@@ -140,6 +151,7 @@ fn collect_drives(
         mountpoint: str_field(dev, "mountpoint"),
         fstype,
         is_encrypted,
+        luks_parent,
         model: meta.model,
         vendor: meta.vendor,
         tran: meta.tran,
@@ -150,8 +162,13 @@ fn collect_drives(
 
 /// Convert a /dev/XYZ path to the udisks2 D-Bus object path.
 /// udisks2 encodes the name by replacing non-[A-Za-z0-9_] chars with '_'.
-fn udisks2_obj_path(device: &str) -> String {
-    let name = device.strip_prefix("/dev/").unwrap_or(device);
+/// Resolves symlinks first so /dev/mapper/luks-* → /dev/dm-N → correct object path.
+pub fn udisks2_obj_path(device: &str) -> String {
+    let resolved = std::fs::canonicalize(device)
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| device.to_owned());
+    let name = resolved.strip_prefix("/dev/").unwrap_or(&resolved);
     let encoded: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
@@ -186,31 +203,51 @@ pub fn mount_device(device: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(mount_path))
 }
 
-/// Unmount a filesystem using its udisks2 D-Bus object path.
-pub fn unmount_filesystem(obj_path: &str) -> Result<()> {
-    let conn = udisks2_conn()?;
-    let proxy = udisks2_proxy(&conn, obj_path, "org.freedesktop.UDisks2.Filesystem")?;
-    let opts: HashMap<String, OwnedValue> = HashMap::new();
-    proxy.call("Unmount", &(opts,)).context("Unmount failed")
+
+/// Unmount a block device by path using udisksctl (handles both udisks2-managed and
+/// externally-mounted drives, e.g. those mounted by GVfs before the app started).
+pub fn udisksctl_unmount(device: &str) -> Result<()> {
+    let out = Command::new("udisksctl")
+        .args(["unmount", "--no-user-interaction", "-b", device])
+        .output()
+        .context("failed to run udisksctl unmount")?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("udisksctl unmount: {}", msg.trim());
+    }
+    Ok(())
 }
 
-/// Unmount a plain device by its /dev/… path.
-pub fn unmount_device(device: &str) -> Result<()> {
-    unmount_filesystem(&udisks2_obj_path(device))
+/// Lock a LUKS device using udisksctl.
+pub fn udisksctl_lock(device: &str) -> Result<()> {
+    let out = Command::new("udisksctl")
+        .args(["lock", "--no-user-interaction", "-b", device])
+        .output()
+        .context("failed to run udisksctl lock")?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("udisksctl lock: {}", msg.trim());
+    }
+    Ok(())
 }
 
-/// Lock a LUKS device by its /dev/… path.
-pub fn lock_luks(device: &str) -> Result<()> {
-    let obj = udisks2_obj_path(device);
-    let conn = udisks2_conn()?;
-    let proxy = udisks2_proxy(&conn, &obj, "org.freedesktop.UDisks2.Encrypted")?;
-    let opts: HashMap<String, OwnedValue> = HashMap::new();
-    proxy.call("Lock", &(opts,)).context("Lock failed")
+/// Power off a drive using udisksctl.
+pub fn udisksctl_power_off(device: &str) -> Result<()> {
+    let out = Command::new("udisksctl")
+        .args(["power-off", "--no-user-interaction", "-b", device])
+        .output()
+        .context("failed to run udisksctl power-off")?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("udisksctl power-off: {}", msg.trim());
+    }
+    Ok(())
 }
+
 
 /// Unlock a LUKS device with the supplied passphrase (passed directly via D-Bus,
 /// no terminal interaction) and mount the cleartext device.
-/// Returns (cleartext_dbus_object_path, mount_point).
+/// Returns (cleartext_block_device_path, mount_point).
 pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathBuf)> {
     let obj = udisks2_obj_path(device);
     let conn = udisks2_conn()?;
@@ -232,6 +269,16 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
             }
         })?;
 
+    // Read the cleartext block device path (e.g. /dev/dm-0) for udisksctl eject later
+    let block = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Block")?;
+    let dev_bytes: Vec<u8> = block
+        .get_property("PreferredDevice")
+        .context("failed to read cleartext PreferredDevice")?;
+    let cleartext_dev = std::str::from_utf8(&dev_bytes)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_owned();
+
     // Call Filesystem.Mount(options) on the cleartext device → mount path
     let fs = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Filesystem")?;
     let mount_opts: HashMap<String, OwnedValue> = HashMap::new();
@@ -239,34 +286,6 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
         .call("Mount", &(mount_opts,))
         .context("udisks2 Mount of cleartext device failed")?;
 
-    Ok((cleartext.to_string(), PathBuf::from(mount_path)))
+    Ok((cleartext_dev, PathBuf::from(mount_path)))
 }
 
-/// Unmount a filesystem and (if LUKS) lock the encrypted device.
-/// `cleartext_obj` is the D-Bus object path returned by `unlock_and_mount`,
-/// or empty if the device was not encrypted.
-#[allow(dead_code)]
-pub fn unmount_and_close(mount_point: &Path, cleartext_obj: &str, luks_device: &str) -> Result<()> {
-    if let Ok(conn) = udisks2_conn() {
-        if !cleartext_obj.is_empty() {
-            // Unmount the cleartext device
-            if let Ok(fs) = udisks2_proxy(&conn, cleartext_obj, "org.freedesktop.UDisks2.Filesystem") {
-                let opts: HashMap<String, OwnedValue> = HashMap::new();
-                let _: zbus::Result<()> = fs.call("Unmount", &(opts,));
-            }
-            // Lock the LUKS container
-            let luks_obj = udisks2_obj_path(luks_device);
-            if let Ok(enc) = udisks2_proxy(&conn, &luks_obj, "org.freedesktop.UDisks2.Encrypted") {
-                let opts: HashMap<String, OwnedValue> = HashMap::new();
-                let _: zbus::Result<()> = enc.call("Lock", &(opts,));
-            }
-        } else {
-            let obj = udisks2_obj_path(mount_point.to_str().unwrap_or(""));
-            if let Ok(fs) = udisks2_proxy(&conn, &obj, "org.freedesktop.UDisks2.Filesystem") {
-                let opts: HashMap<String, OwnedValue> = HashMap::new();
-                let _: zbus::Result<()> = fs.call("Unmount", &(opts,));
-            }
-        }
-    }
-    Ok(())
-}
