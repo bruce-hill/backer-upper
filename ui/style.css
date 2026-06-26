@@ -779,6 +779,18 @@ details[open] summary {
   font-size: 14px;
 }
 
+/* Direction arrows */
+.dir-arrow {
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0 6px;
+  font-family: inherit;
+}
+.direction-cell {
+  white-space: normal;
+  word-break: break-all;
+}
+
 /* Restore: subpath input indented under each job checkbox */
 .restore-job-entry {
   margin-bottom: 6px;

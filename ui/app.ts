@@ -266,8 +266,8 @@ function renderJobsTable(jobs: BackupJob[]): void {
       (j, i) => `
     <tr>
       <td>${escHtml(j.name)}</td>
-      <td class="mono">${escHtml(j.source)}</td>
-      <td>${escHtml(j.mode === 'Backup' ? 'Snapshot' : j.mode === 'Media' ? 'Hoard' : j.mode)}</td>
+      <td class="mono direction-cell">${escHtml(j.source)}<span class="dir-arrow">→</span>${escHtml(j.destination)}</td>
+      <td>${j.mode === 'Backup' ? '📸 Snapshot' : j.mode === 'Media' ? '📚 Hoard' : escHtml(j.mode)}</td>
       <td>
         <input type="checkbox" ${j.enabled ? 'checked' : ''}
           onchange="toggleJob(${i}, this.checked)">
@@ -603,7 +603,7 @@ async function goToRestore(): Promise<void> {
           <input type="checkbox" class="restore-job-check" data-idx="${i}" checked />
           <span>
             <strong>${escHtml(j.name)}</strong>
-            <span class="radio-desc">from <code>${escHtml(String(j.destination))}</code> on drive → <code>${escHtml(j.source)}</code> locally</span>
+            <span class="radio-desc">💾 <code>${escHtml(String(j.destination))}</code><span class="dir-arrow">→</span>💻 <code>${escHtml(j.source)}</code></span>
           </span>
         </label>
         <div class="restore-subpath-row">
