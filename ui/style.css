@@ -79,8 +79,11 @@ header h1 {
 
 main {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
+  display: flex;
+  flex-direction: column;
 }
 
 .screen {
@@ -88,6 +91,122 @@ main {
 }
 .screen.active {
   display: block;
+}
+
+/* ── Per-screen layouts ───────────────────────────────────────────────────── */
+
+/* Password: vertically centered dialog */
+#screen-password.active {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+}
+.dialog {
+  width: 100%;
+  max-width: 420px;
+}
+
+/* Config: table fills available height; buttons always visible */
+#screen-config.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#screen-config .card-flush {
+  flex: 1;
+  min-height: 100px;
+  overflow-y: auto;
+  margin-bottom: 0;
+}
+
+/* Preview: command list scrolls; Run button always visible */
+#screen-preview.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#preview-commands {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+#preview-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Backup: always-visible log fills remaining height */
+#screen-backup.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.log-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.log-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+#backup-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Format progress: log fills remaining height */
+#screen-format-progress.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#format-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Format setup: probe info and form side by side */
+.format-columns {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.format-col-probe {
+  flex: 1;
+  min-width: 0;
+}
+.format-col-form {
+  width: 310px;
+  flex-shrink: 0;
+}
+.format-col-form .form-grid {
+  grid-template-columns: 120px 1fr;
+}
+@media (max-width: 580px) {
+  .format-columns {
+    flex-direction: column;
+  }
+  .format-col-form {
+    width: 100%;
+  }
+  .format-col-form .form-grid {
+    grid-template-columns: 160px 1fr;
+  }
 }
 
 .screen-header {

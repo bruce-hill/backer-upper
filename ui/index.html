@@ -30,17 +30,19 @@
 
       <!-- PasswordPrompt -->
       <div id="screen-password" class="screen">
-        <h2 id="password-heading">Unlock Drive</h2>
-        <div class="card">
-          <p>This drive is LUKS-encrypted. Enter the passphrase to unlock it.</p>
-          <div class="form-grid">
-            <label>Passphrase</label>
-            <input type="password" id="password-input" placeholder="Passphrase" />
-          </div>
-          <div id="password-error" class="error-text" style="display: none"></div>
-          <div class="btn-row">
-            <button id="btn-password-cancel">Cancel</button>
-            <button id="btn-password-unlock" class="primary">Unlock</button>
+        <div class="dialog">
+          <h2 id="password-heading">Unlock Drive</h2>
+          <div class="card">
+            <p>This drive is LUKS-encrypted. Enter the passphrase to unlock it.</p>
+            <div class="form-grid">
+              <label>Passphrase</label>
+              <input type="password" id="password-input" placeholder="Passphrase" />
+            </div>
+            <div id="password-error" class="error-text" style="display: none"></div>
+            <div class="btn-row">
+              <button id="btn-password-cancel">Cancel</button>
+              <button id="btn-password-unlock" class="primary">Unlock</button>
+            </div>
           </div>
         </div>
       </div>
@@ -150,10 +152,10 @@
 
         <div class="muted" id="backup-elapsed"></div>
 
-        <details>
-          <summary>Output Log</summary>
+        <div class="log-section">
+          <div class="log-label">Output Log</div>
           <div id="backup-log" class="log-box"></div>
-        </details>
+        </div>
 
         <div class="btn-row" id="backup-btn-row">
           <button id="btn-backup-pause">Pause</button>
@@ -180,34 +182,40 @@
             <span id="format-drive-info-line"></span>
           </div>
 
-          <div class="card terminal">
-            <div id="format-probe-content">
-              <em>Reading drive contents…</em>
+          <div class="format-columns">
+            <div class="format-col-probe">
+              <div class="card terminal">
+                <div id="format-probe-content">
+                  <em>Reading drive contents…</em>
+                </div>
+              </div>
+
+              <details>
+                <summary>Commands that will run</summary>
+                <div id="format-cmd-preview" class="log-box"></div>
+              </details>
             </div>
-          </div>
 
-          <details>
-            <summary>Commands that will run</summary>
-            <div id="format-cmd-preview" class="log-box"></div>
-          </details>
+            <div class="format-col-form">
+              <div class="card">
+                <div class="form-grid">
+                  <label>Drive label</label>
+                  <input type="text" id="format-label" value="Backup" />
+                  <label>Passphrase</label>
+                  <input type="password" id="format-pass1" placeholder="Choose a passphrase" />
+                  <label>Confirm</label>
+                  <input type="password" id="format-pass2" placeholder="Repeat passphrase" />
+                  <label id="format-confirm-label">Type device path</label>
+                  <input type="text" id="format-confirm-input" placeholder="/dev/sdX" />
+                </div>
+                <div id="format-validation-msg" style="display: none" class="error-text"></div>
+                <div id="format-error" class="error-text" style="display: none"></div>
 
-          <div class="card">
-            <div class="form-grid">
-              <label>Drive label</label>
-              <input type="text" id="format-label" value="Backup" />
-              <label>Passphrase</label>
-              <input type="password" id="format-pass1" placeholder="Choose a passphrase" />
-              <label>Confirm passphrase</label>
-              <input type="password" id="format-pass2" placeholder="Repeat passphrase" />
-              <label id="format-confirm-label">Type device path to confirm</label>
-              <input type="text" id="format-confirm-input" placeholder="/dev/sdX" />
-            </div>
-            <div id="format-validation-msg" style="display: none" class="error-text"></div>
-            <div id="format-error" class="error-text" style="display: none"></div>
-
-            <div class="btn-row">
-              <button id="btn-format-cancel">Cancel</button>
-              <button id="btn-do-format" class="danger" disabled>Format Drive</button>
+                <div class="btn-row">
+                  <button id="btn-format-cancel">Cancel</button>
+                  <button id="btn-do-format" class="danger" disabled>Format Drive</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

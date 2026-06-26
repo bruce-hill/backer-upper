@@ -398,10 +398,12 @@ async function goToPreview(): Promise<void> {
   const el = document.getElementById('preview-commands')!;
   const empty = document.getElementById('preview-empty')!;
   if (cmds.length === 0) {
+    el.style.display = 'none';
     el.innerHTML = '';
     empty.style.display = '';
     (document.getElementById('btn-run-backup') as HTMLButtonElement).disabled = true;
   } else {
+    el.style.display = '';
     empty.style.display = 'none';
     el.innerHTML = cmds
       .map(
