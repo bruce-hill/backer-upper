@@ -14,6 +14,13 @@ use crate::wipe::{self, WipeProgress};
 // ── Serializable response types ──────────────────────────────────────────────
 
 #[derive(Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: String,
+}
+
+#[derive(Serialize)]
 pub struct DriveJson {
     pub device: String,
     pub label: Option<String>,
@@ -779,6 +786,81 @@ fn validate_subpath(sub: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let rd = std::fs::read_dir(&path)
+            .map_err(|e| format!("Cannot read {}: {}", path, e))?;
+
+        let mut entries: Vec<(String, bool)> = Vec::new();
+        for entry in rd {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let ft = entry.file_type().map_err(|e| e.to_string())?;
+            let is_dir = if ft.is_symlink() {
+                std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false)
+            } else {
+                ft.is_dir()
+            };
+            entries.push((name, is_dir));
+        }
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let dir_sizes: std::collections::HashMap<String, String> = {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(out) = std::process::Command::new("du")
+                .args(["-h", "--max-depth=1", &path])
+                .output()
+            {
+                let path_trimmed = path.trim_end_matches('/');
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    let mut parts = line.splitn(2, '\t');
+                    if let (Some(size), Some(p)) = (parts.next(), parts.next()) {
+                        let p = p.trim_end_matches('/');
+                        if p != path_trimmed {
+                            if let Some(name) = p.rsplit('/').next() {
+                                map.insert(name.to_owned(), size.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            map
+        };
+
+        let result = entries
+            .into_iter()
+            .map(|(name, is_dir)| {
+                let size = if is_dir {
+                    dir_sizes.get(&name).cloned().unwrap_or_default()
+                } else {
+                    let full = format!("{}/{}", path, name);
+                    std::fs::metadata(&full)
+                        .map(|m| fmt_dir_entry_bytes(m.len()))
+                        .unwrap_or_default()
+                };
+                DirEntry { name, is_dir, size }
+            })
+            .collect();
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn fmt_dir_entry_bytes(b: u64) -> String {
+    if b >= 1_073_741_824 {
+        format!("{:.1}G", b as f64 / 1_073_741_824.0)
+    } else if b >= 1_048_576 {
+        format!("{:.1}M", b as f64 / 1_048_576.0)
+    } else if b >= 1_024 {
+        format!("{:.1}K", b as f64 / 1_024.0)
+    } else {
+        format!("{}B", b)
+    }
 }
 
 #[tauri::command]

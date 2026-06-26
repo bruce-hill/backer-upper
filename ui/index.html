@@ -121,12 +121,21 @@
             <label>Enabled</label>
             <input type="checkbox" id="job-enabled" />
           </div>
-          <label class="excludes-label">Excludes (one per line, rsync patterns)</label>
-          <textarea
-            id="job-excludes"
-            rows="4"
-            placeholder=".git&#10;node_modules&#10;*.tmp"
-          ></textarea>
+          <div class="excludes-section">
+            <div class="excludes-section-header">
+              <label class="excludes-label">Files to back up</label>
+              <span class="excludes-hint">Uncheck to exclude</span>
+            </div>
+            <div id="excludes-tree" class="excludes-tree">
+              <div class="tree-msg"><span class="spinner"></span> Loading…</div>
+            </div>
+            <div class="presets-row">
+              <span class="presets-row-label">Suggested:</span>
+              <div id="presets-chips" class="presets-chips"></div>
+            </div>
+            <label class="excludes-label excludes-patterns-label">Exclude patterns</label>
+            <textarea id="job-excludes-manual" rows="2" placeholder=".git&#10;*.log"></textarea>
+          </div>
           <div class="btn-row">
             <button id="btn-job-cancel">Cancel</button>
             <button id="btn-job-save" class="primary">Save Job</button>

@@ -87,6 +87,22 @@ interface PreviewCommand {
   cmd: string;
 }
 
+interface RemoteDirEntry {
+  name: string;
+  is_dir: boolean;
+  size: string;
+}
+
+interface TreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: string;
+  children: TreeNode[] | null;
+  loading: boolean;
+  expanded: boolean;
+}
+
 interface DriveProbeResult {
   finished: boolean;
   lsblk_text?: string;
@@ -117,6 +133,64 @@ interface WipeProgress {
 let drives: DriveInfo[] = [];
 let selectedDevice: string | null = null;
 let editingJobIdx: number | null = null;
+let treeSource = '';
+let treeRoots: TreeNode[] = [];
+let treeLoadError = '';
+let treeLoadGen = 0;
+let excludedPaths = new Set<string>();
+let activePresets = new Set<string>();
+let treeLoaded = false;
+
+const PRESETS: Array<{ id: string; label: string; title: string; patterns: string[] }> = [
+  {
+    id: 'cache',
+    label: '~/.cache',
+    title: 'Browser caches, thumbnails, app data caches (/.cache/)',
+    patterns: ['/.cache/'],
+  },
+  {
+    id: 'trash',
+    label: 'Trash',
+    title: 'Deleted files in ~/.local/share/Trash',
+    patterns: ['/.local/share/Trash/'],
+  },
+  {
+    id: 'node',
+    label: 'node_modules',
+    title: 'npm/yarn/pnpm dependency directories (node_modules/)',
+    patterns: ['node_modules/'],
+  },
+  {
+    id: 'python',
+    label: 'Python',
+    title: 'Bytecode and virtual environments (__pycache__/, *.pyc, .venv/)',
+    patterns: ['__pycache__/', '*.pyc', '*.pyo', '.venv/', 'venv/'],
+  },
+  {
+    id: 'rust',
+    label: 'Rust build',
+    title: 'Cargo compiler output (target/)',
+    patterns: ['target/'],
+  },
+  {
+    id: 'temp',
+    label: 'Temp files',
+    title: 'Temporary files and editor backups (*.tmp, *~, *.swp)',
+    patterns: ['*.tmp', '*.temp', '*~', '*.swp', '*.swo'],
+  },
+  {
+    id: 'steam',
+    label: 'Steam',
+    title: 'Game files — large, re-downloadable (/.local/share/Steam/)',
+    patterns: ['/.local/share/Steam/'],
+  },
+  {
+    id: 'osjunk',
+    label: 'OS junk',
+    title: 'macOS/Windows metadata files (.DS_Store, Thumbs.db)',
+    patterns: ['.DS_Store', 'Thumbs.db'],
+  },
+];
 let backupPollId: ReturnType<typeof setInterval> | null = null;
 let formatPollId: ReturnType<typeof setInterval> | null = null;
 let wipePollId: ReturnType<typeof setInterval> | null = null;
@@ -319,6 +393,286 @@ async function addJob(): Promise<void> {
   }
 }
 
+// ── Excludes file tree ────────────────────────────────────────────────────────
+
+function isEffectivelyExcluded(path: string): boolean {
+  if (excludedPaths.has(path)) return true;
+  const parts = path.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    if (excludedPaths.has(parts.slice(0, i).join('/'))) return true;
+  }
+  return false;
+}
+
+function hasExcludedDescendant(node: TreeNode): boolean {
+  if (!node.children) return false;
+  return node.children.some((c) => excludedPaths.has(c.path) || hasExcludedDescendant(c));
+}
+
+function toggleTreeNode(path: string): void {
+  if (excludedPaths.has(path)) {
+    excludedPaths.delete(path);
+  } else if (!isEffectivelyExcluded(path)) {
+    excludedPaths.add(path);
+    for (const p of [...excludedPaths]) {
+      if (p.startsWith(path + '/')) excludedPaths.delete(p);
+    }
+  }
+  renderExcludesTree();
+}
+
+function findTreeNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    if (node.children && path.startsWith(node.path + '/')) {
+      const found = findTreeNode(node.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+async function toggleTreeExpand(path: string): Promise<void> {
+  const node = findTreeNode(treeRoots, path);
+  if (!node || !node.isDir || node.loading) return;
+  node.expanded = !node.expanded;
+  if (node.expanded && node.children === null) {
+    node.loading = true;
+    renderExcludesTree();
+    try {
+      const fullPath = treeSource.replace(/\/$/, '') + '/' + path;
+      const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: fullPath });
+      node.children = entries.map((e) => ({
+        name: e.name,
+        path: path + '/' + e.name,
+        isDir: e.is_dir,
+        size: e.size,
+        children: null,
+        loading: false,
+        expanded: false,
+      }));
+    } catch (_) {
+      node.children = null;
+      node.expanded = false;
+    }
+    node.loading = false;
+  }
+  renderExcludesTree();
+}
+
+async function loadExcludesTree(source: string, excludes: string[]): Promise<void> {
+  const gen = ++treeLoadGen;
+  treeSource = source.trim();
+  treeRoots = [];
+  treeLoaded = false;
+  treeLoadError = '';
+  excludedPaths = new Set();
+  activePresets = new Set();
+
+  // Split excludes into tree-path patterns and everything else.
+  // Preset patterns take priority: they go to nonTreePatterns regardless of leading slash,
+  // so preset detection can find them.
+  const presetPatternSet = new Set(PRESETS.flatMap((p) => p.patterns));
+  const nonTreePatterns: string[] = [];
+  for (const exc of excludes) {
+    if (!presetPatternSet.has(exc) && exc.startsWith('/') && !/[*?[{]/.test(exc)) {
+      excludedPaths.add(exc.replace(/^\//, '').replace(/\/$/, ''));
+    } else {
+      nonTreePatterns.push(exc);
+    }
+  }
+
+  // Detect which presets are fully present in nonTreePatterns; the rest go to manual textarea
+  const claimedPatterns = new Set<string>();
+  for (const preset of PRESETS) {
+    if (preset.patterns.every((p) => nonTreePatterns.includes(p))) {
+      activePresets.add(preset.id);
+      preset.patterns.forEach((p) => claimedPatterns.add(p));
+    }
+  }
+  const manualPatterns = nonTreePatterns.filter((p) => !claimedPatterns.has(p));
+  (document.getElementById('job-excludes-manual') as HTMLTextAreaElement).value =
+    manualPatterns.join('\n');
+
+  renderPresetChips();
+  renderExcludesTree();
+  if (!treeSource) return;
+
+  try {
+    const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: treeSource });
+    if (gen !== treeLoadGen) return;
+    treeRoots = entries.map((e) => ({
+      name: e.name,
+      path: e.name,
+      isDir: e.is_dir,
+      size: e.size,
+      children: null,
+      loading: false,
+      expanded: false,
+    }));
+  } catch (err) {
+    if (gen !== treeLoadGen) return;
+    treeLoadError = String(err);
+  }
+  treeLoaded = true;
+  renderExcludesTree();
+}
+
+async function reloadTreeSource(source: string): Promise<void> {
+  const gen = ++treeLoadGen;
+  treeSource = source.trim();
+  treeRoots = [];
+  treeLoaded = false;
+  treeLoadError = '';
+  renderExcludesTree();
+  if (!treeSource) return;
+  try {
+    const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: treeSource });
+    if (gen !== treeLoadGen) return;
+    treeRoots = entries.map((e) => ({
+      name: e.name,
+      path: e.name,
+      isDir: e.is_dir,
+      size: e.size,
+      children: null,
+      loading: false,
+      expanded: false,
+    }));
+  } catch (err) {
+    if (gen !== treeLoadGen) return;
+    treeLoadError = String(err);
+  }
+  treeLoaded = true;
+  renderExcludesTree();
+}
+
+function renderExcludesTree(): void {
+  const el = document.getElementById('excludes-tree')!;
+  const scrollTop = el.scrollTop;
+
+  if (!treeSource) {
+    el.innerHTML = '<div class="tree-msg">Enter a source folder above to browse files</div>';
+    return;
+  }
+  if (treeLoadError) {
+    el.innerHTML = `<div class="tree-msg tree-error">${escHtml(treeLoadError)}</div>`;
+    return;
+  }
+  if (!treeLoaded) {
+    el.innerHTML = '<div class="tree-msg"><span class="spinner"></span> Loading directory…</div>';
+    return;
+  }
+  if (treeRoots.length === 0) {
+    el.innerHTML = '<div class="tree-msg">Source folder is empty</div>';
+    return;
+  }
+
+  el.innerHTML = renderTreeNodes(treeRoots, 0);
+  el.scrollTop = scrollTop;
+
+  el.querySelectorAll<HTMLInputElement>('.tree-check[data-ind]').forEach((cb) => {
+    cb.indeterminate = true;
+  });
+  el.querySelectorAll<HTMLInputElement>('.tree-check:not([disabled])').forEach((cb) => {
+    cb.addEventListener('change', () => toggleTreeNode(cb.dataset.path!));
+  });
+  el.querySelectorAll<HTMLButtonElement>('.tree-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => toggleTreeExpand(btn.dataset.path!));
+  });
+}
+
+function renderTreeNodes(nodes: TreeNode[], depth: number): string {
+  return nodes.map((n) => renderTreeNode(n, depth)).join('');
+}
+
+function renderTreeNode(node: TreeNode, depth: number): string {
+  const effExcluded = isEffectivelyExcluded(node.path);
+  const directExcl = excludedPaths.has(node.path);
+  const viaAnc = effExcluded && !directExcl;
+  const indeterminate = !effExcluded && hasExcludedDescendant(node);
+  const checked = !effExcluded;
+
+  const indent = 8 + depth * 20;
+  const icon = node.isDir ? '📁' : '📄';
+
+  const cbParts = [
+    'type="checkbox"',
+    'class="tree-check"',
+    `data-path="${escHtml(node.path)}"`,
+    checked || indeterminate ? 'checked' : '',
+    viaAnc ? 'disabled' : '',
+    indeterminate ? 'data-ind' : '',
+  ].filter(Boolean);
+  const cbAttrs = cbParts.join(' ');
+
+  const toggleEl = node.isDir
+    ? `<button class="tree-toggle" data-path="${escHtml(node.path)}">${node.expanded ? '▼' : '▶'}</button>`
+    : `<span class="tree-toggle-ph"></span>`;
+
+  let childrenHtml = '';
+  if (node.isDir && node.expanded) {
+    if (node.loading) {
+      childrenHtml = `<div class="tree-children"><div class="tree-msg"><span class="spinner"></span></div></div>`;
+    } else if (!node.children || node.children.length === 0) {
+      childrenHtml = `<div class="tree-children"><div class="tree-msg">Empty directory</div></div>`;
+    } else {
+      childrenHtml = `<div class="tree-children">${renderTreeNodes(node.children, depth + 1)}</div>`;
+    }
+  }
+
+  return `<div class="tree-node${effExcluded ? ' is-excluded' : ''}">
+    <div class="tree-row" style="padding-left:${indent}px">
+      <input ${cbAttrs}>
+      ${toggleEl}
+      <span class="tree-icon">${icon}</span>
+      <span class="tree-name">${escHtml(node.name)}</span>
+      ${node.size ? `<span class="tree-size">${escHtml(node.size)}</span>` : ''}
+    </div>
+    ${childrenHtml}
+  </div>`;
+}
+
+function renderPresetChips(): void {
+  const el = document.getElementById('presets-chips')!;
+  el.innerHTML = PRESETS.map(
+    (p) =>
+      `<button class="preset-chip${activePresets.has(p.id) ? ' active' : ''}" data-id="${escHtml(p.id)}" title="${escHtml(p.title)}">${escHtml(p.label)}</button>`
+  ).join('');
+  el.querySelectorAll<HTMLButtonElement>('.preset-chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id!;
+      if (activePresets.has(id)) {
+        activePresets.delete(id);
+      } else {
+        activePresets.add(id);
+      }
+      renderPresetChips();
+    });
+  });
+}
+
+function buildExcludes(): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const add = (p: string) => {
+    if (!seen.has(p)) {
+      seen.add(p);
+      result.push(p);
+    }
+  };
+  [...excludedPaths].sort().forEach((p) => add('/' + p));
+  for (const preset of PRESETS) {
+    if (activePresets.has(preset.id)) preset.patterns.forEach(add);
+  }
+  const manualText = (document.getElementById('job-excludes-manual') as HTMLTextAreaElement).value;
+  manualText
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .forEach(add);
+  return result;
+}
+
 async function editJob(idx: number): Promise<void> {
   const status = await invoke<AppStatus>('get_status');
   const jobs = status.config?.jobs || [];
@@ -330,9 +684,6 @@ async function editJob(idx: number): Promise<void> {
   (document.getElementById('job-name') as HTMLInputElement).value = job?.name || '';
   (document.getElementById('job-source') as HTMLInputElement).value = job?.source || '';
   (document.getElementById('job-dest') as HTMLInputElement).value = job?.destination || '';
-  (document.getElementById('job-excludes') as HTMLTextAreaElement).value = (
-    job?.excludes || []
-  ).join('\n');
   (document.getElementById('job-enabled') as HTMLInputElement).checked = job?.enabled ?? true;
   const mode = job?.mode || 'Backup';
   document.querySelectorAll<HTMLInputElement>('input[name="job-mode"]').forEach((r) => {
@@ -341,6 +692,7 @@ async function editJob(idx: number): Promise<void> {
   (document.getElementById('btn-job-delete') as HTMLElement).style.display =
     idx < jobs.length ? '' : 'none';
   showScreen('job-edit');
+  loadExcludesTree(job?.source || '', job?.excludes || []);
 }
 
 async function saveJob(): Promise<void> {
@@ -348,10 +700,7 @@ async function saveJob(): Promise<void> {
   const config = status.config;
   if (!config) return;
 
-  const excludes = (document.getElementById('job-excludes') as HTMLTextAreaElement).value
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const excludes = buildExcludes();
 
   const modeEl = document.querySelector<HTMLInputElement>('input[name="job-mode"]:checked');
   const job: BackupJob = {
@@ -1094,6 +1443,12 @@ document.getElementById('btn-job-cancel')!.addEventListener('click', async () =>
 });
 document.getElementById('btn-job-save')!.addEventListener('click', saveJob);
 document.getElementById('btn-job-delete')!.addEventListener('click', deleteJob);
+document.getElementById('job-source')!.addEventListener('blur', () => {
+  const source = (document.getElementById('job-source') as HTMLInputElement).value.trim();
+  if (source !== treeSource) {
+    void reloadTreeSource(source);
+  }
+});
 
 document.getElementById('btn-restore-cancel')!.addEventListener('click', async () => {
   const status = await invoke<AppStatus>('get_status');

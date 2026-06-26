@@ -447,6 +447,17 @@ fn do_format(
         }
     }
 
+    if pending_error.is_none() {
+        let _ = Command::new("doas")
+            .args(["udevadm", "trigger", "--action=change", device])
+            .stdin(Stdio::null())
+            .status();
+        let _ = Command::new("doas")
+            .args(["udevadm", "settle"])
+            .stdin(Stdio::null())
+            .status();
+    }
+
     pending_error.map_or(Ok(()), Err)
 }
 
@@ -476,7 +487,7 @@ pub fn run_format(
                 p.step_name = "Done".to_owned();
                 p.log.push(String::new());
                 p.log.push(format!(
-                    "✓ Drive '{label}' is ready. Unplug and replug it, then select it to start backing up."
+                    "✓ Drive '{label}' is ready. Select it to start backing up."
                 ));
             }
             Err(e) => {

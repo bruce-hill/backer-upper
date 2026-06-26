@@ -41,6 +41,7 @@ fn main() {
             commands::start_wipe_free_space,
             commands::get_wipe_progress,
             commands::cancel_wipe,
+            commands::list_dir,
             commands::quit,
         ])
         .run(tauri::generate_context!())
