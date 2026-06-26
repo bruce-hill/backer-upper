@@ -233,7 +233,7 @@ pub fn run_backup(
             return;
         }
 
-        let snapshot_name = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let snapshot_name = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let snapshots_dir = drive_root.join("snapshots");
         let _ = std::fs::create_dir_all(&snapshots_dir);
 
