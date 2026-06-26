@@ -13,6 +13,7 @@ declare global {
     cancelBackup: () => Promise<void>;
     showConfigFromBackup: () => Promise<void>;
     ejectDrive: () => Promise<void>;
+    goToRestore: () => Promise<void>;
   }
 }
 
@@ -544,7 +545,10 @@ function updateBackupUI(p: BackupProgress): void {
   // Swap buttons when done
   if (!p.running && (p.finished || p.cancelled || p.error)) {
     const btnRow = document.getElementById('backup-btn-row')!;
+    const restoreAgainBtn = operationIsRestore
+      ? `<button onclick="goToRestore()">↺ Restore Again</button>` : '';
     btnRow.innerHTML = `
+      ${restoreAgainBtn}
       <button onclick="showConfigFromBackup()">← Back to Config</button>
       <button onclick="ejectDrive()" class="primary">Eject Drive</button>`;
   }
@@ -963,6 +967,7 @@ window.togglePause = togglePause;
 window.cancelBackup = cancelBackup;
 window.showConfigFromBackup = showConfigFromBackup;
 window.ejectDrive = ejectDrive;
+window.goToRestore = goToRestore;
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
