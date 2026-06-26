@@ -100,38 +100,38 @@ pub struct AppStatus {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_drives() -> Result<Vec<DriveJson>, String> {
-    drives::list_removable_drives()
-        .map(|ds| ds.into_iter().map(DriveJson::from).collect())
-        .map_err(|e| e.to_string())
+pub async fn list_drives() -> Result<Vec<DriveJson>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        drives::list_removable_drives()
+            .map(|ds| ds.into_iter().map(DriveJson::from).collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn open_drive(
+pub async fn open_drive(
     state: State<'_, Mutex<AppState>>,
     device: String,
-) -> OpenResult {
-    let drive = {
-        let drives = match drives::list_removable_drives() {
-            Ok(d) => d,
-            Err(e) => {
-                return OpenResult {
-                    needs_password: false,
-                    mounted: None,
-                    error: Some(e.to_string()),
-                };
-            }
-        };
-        match drives.into_iter().find(|d| d.device == device) {
-            Some(d) => d,
-            None => {
-                return OpenResult {
-                    needs_password: false,
-                    mounted: None,
-                    error: Some(format!("Drive {device} not found")),
-                };
-            }
+) -> Result<OpenResult, String> {
+    let drive = match tauri::async_runtime::spawn_blocking({
+        let device = device.clone();
+        move || {
+            drives::list_removable_drives()
+                .map_err(|e| e.to_string())
+                .and_then(|ds| {
+                    ds.into_iter()
+                        .find(|d| d.device == device)
+                        .ok_or_else(|| format!("Drive {device} not found"))
+                })
         }
+    })
+    .await
+    {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => return Ok(OpenResult { needs_password: false, mounted: None, error: Some(e) }),
+        Err(e) => return Ok(OpenResult { needs_password: false, mounted: None, error: Some(e.to_string()) }),
     };
 
     if drive.is_mounted() {
@@ -147,71 +147,62 @@ pub fn open_drive(
         }
         s.config = Some(config.clone());
         s.config_dirty = false;
-        return OpenResult {
+        return Ok(OpenResult {
             needs_password: false,
-            mounted: Some(MountResult {
-                mount_point: mp.display().to_string(),
-                config,
-            }),
+            mounted: Some(MountResult { mount_point: mp.display().to_string(), config }),
             error: None,
-        };
+        });
     }
 
     if drive.is_encrypted {
-        return OpenResult {
-            needs_password: true,
-            mounted: None,
-            error: None,
-        };
+        return Ok(OpenResult { needs_password: true, mounted: None, error: None });
     }
 
-    match drives::mount_device(&drive.device) {
-        Ok(mp) => {
+    let dev = drive.device.clone();
+    match tauri::async_runtime::spawn_blocking(move || drives::mount_device(&dev)).await {
+        Ok(Ok(mp)) => {
             let config = load_config(&mp);
             let mut s = state.lock().unwrap();
-            s.mounted_device = Some(drive.device.clone());
+            s.mounted_device = Some(drive.device);
             s.mount_point = Some(mp.clone());
             s.config = Some(config.clone());
             s.config_dirty = false;
-            OpenResult {
+            Ok(OpenResult {
                 needs_password: false,
-                mounted: Some(MountResult {
-                    mount_point: mp.display().to_string(),
-                    config,
-                }),
+                mounted: Some(MountResult { mount_point: mp.display().to_string(), config }),
                 error: None,
-            }
+            })
         }
-        Err(e) => OpenResult {
+        Ok(Err(e)) => Ok(OpenResult {
             needs_password: false,
             mounted: None,
             error: Some(format!("Mount failed: {e}")),
-        },
+        }),
+        Err(e) => Ok(OpenResult { needs_password: false, mounted: None, error: Some(e.to_string()) }),
     }
 }
 
 #[tauri::command]
-pub fn unlock_drive(
+pub async fn unlock_drive(
     state: State<'_, Mutex<AppState>>,
     device: String,
     password: String,
 ) -> Result<MountResult, String> {
-    match drives::unlock_and_mount(&device, &password) {
-        Ok((dm_device, mp)) => {
-            let config = load_config(&mp);
-            let mut s = state.lock().unwrap();
-            s.mounted_device = Some(device);
-            s.mapper_name = Some(dm_device);
-            s.mount_point = Some(mp.clone());
-            s.config = Some(config.clone());
-            s.config_dirty = false;
-            Ok(MountResult {
-                mount_point: mp.display().to_string(),
-                config,
-            })
-        }
-        Err(e) => Err(e.to_string()),
-    }
+    let luks_dev = device.clone();
+    let (dm_device, mp) = tauri::async_runtime::spawn_blocking(move || {
+        drives::unlock_and_mount(&device, &password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let config = load_config(&mp);
+    let mut s = state.lock().unwrap();
+    s.mounted_device = Some(luks_dev);
+    s.mapper_name = Some(dm_device);
+    s.mount_point = Some(mp.clone());
+    s.config = Some(config.clone());
+    s.config_dirty = false;
+    Ok(MountResult { mount_point: mp.display().to_string(), config })
 }
 
 #[tauri::command]
