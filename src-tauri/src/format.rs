@@ -25,6 +25,19 @@ pub fn probe_drive(device: String, fstype: Option<String>) -> SharedDriveInfo {
     ret
 }
 
+fn get_mountpoint(device: &str) -> Option<std::path::PathBuf> {
+    let out = Command::new("lsblk")
+        .args(["-n", "-o", "MOUNTPOINT", device])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 fn do_probe(device: &str, fstype: Option<&str>) -> DriveInfo {
     let mut info = DriveInfo::default();
 
@@ -52,34 +65,43 @@ fn do_probe(device: &str, fstype: Option<&str>) -> DriveInfo {
         _ => {}
     }
 
-    match crate::drives::mount_device(device) {
-        Err(e) => {
-            info.note = Some(format!("Could not mount for preview: {e}"));
-        }
-        Ok(mp) => {
-            let mp_str = mp.to_string_lossy();
-            if let Ok(out) = Command::new("df")
-                .args(["-h", &*mp_str])
-                .stdin(Stdio::null())
-                .output()
-            {
-                let text = String::from_utf8_lossy(&out.stdout).to_string();
-                if !text.trim().is_empty() {
-                    info.df_text = Some(text);
-                }
+    let existing_mp = get_mountpoint(device);
+    let (mp, we_mounted) = if let Some(mp) = existing_mp {
+        (mp, false)
+    } else {
+        match crate::drives::mount_device(device) {
+            Err(e) => {
+                info.note = Some(format!("Could not mount for preview: {e}"));
+                info.finished = true;
+                return info;
             }
-            if let Ok(out) = Command::new("ls")
-                .args(["-lAh", &*mp_str])
-                .stdin(Stdio::null())
-                .output()
-            {
-                let text = String::from_utf8_lossy(&out.stdout).to_string();
-                if !text.trim().is_empty() {
-                    info.ls_text = Some(text);
-                }
-            }
-            let _ = crate::drives::udisksctl_unmount(device);
+            Ok(mp) => (mp, true),
         }
+    };
+
+    let mp_str = mp.to_string_lossy();
+    if let Ok(out) = Command::new("df")
+        .args(["-h", &*mp_str])
+        .stdin(Stdio::null())
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if !text.trim().is_empty() {
+            info.df_text = Some(text);
+        }
+    }
+    if let Ok(out) = Command::new("ls")
+        .args(["-lAh", &*mp_str])
+        .stdin(Stdio::null())
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if !text.trim().is_empty() {
+            info.ls_text = Some(text);
+        }
+    }
+    if we_mounted {
+        let _ = crate::drives::udisksctl_unmount(device);
     }
 
     info.finished = true;
@@ -173,6 +195,35 @@ fn doas_with_passphrase(
     Ok(())
 }
 
+fn find_mounted_device(device: &str, is_disk: bool) -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let is_mounted = |dev: &str| -> bool {
+        let canonical = std::fs::canonicalize(dev).ok();
+        mounts.lines().any(|line| {
+            let mount_dev = line.split_whitespace().next().unwrap_or("");
+            if mount_dev == dev {
+                return true;
+            }
+            if let Some(ref c) = canonical {
+                if let Ok(mc) = std::fs::canonicalize(mount_dev) {
+                    return &mc == c;
+                }
+            }
+            false
+        })
+    };
+    if is_mounted(device) {
+        return Some(device.to_owned());
+    }
+    if is_disk {
+        let part = crate::drives::partition_path(device);
+        if Path::new(&part).exists() && is_mounted(&part) {
+            return Some(part);
+        }
+    }
+    None
+}
+
 fn validate_device(device: &str, is_disk: bool, progress: &SharedFormatProgress) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
 
@@ -260,6 +311,14 @@ fn do_format(
     progress: &SharedFormatProgress,
 ) -> Result<()> {
     let mapper = "backer-upper-format";
+
+    if let Some(mounted_dev) = find_mounted_device(device, is_disk) {
+        progress.lock().unwrap().total_steps += 1;
+        advance(progress, "Unmounting drive");
+        crate::drives::udisksctl_unmount(&mounted_dev)
+            .with_context(|| format!("Failed to unmount {mounted_dev} before formatting"))?;
+    }
+
     validate_device(device, is_disk, progress)?;
 
     let partition: String = if is_disk {

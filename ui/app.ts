@@ -748,16 +748,8 @@ async function enterFormatSetup(device: string, fstype: string | undefined, isDi
   setError('format-validation-msg', '');
   (document.getElementById('btn-do-format') as HTMLButtonElement).disabled = true;
 
-  if (drive && drive.is_mounted) {
-    (document.getElementById('format-mounted-error') as HTMLElement).style.display = '';
-    (document.getElementById('format-main-content') as HTMLElement).style.display = 'none';
-  } else {
-    (document.getElementById('format-mounted-error') as HTMLElement).style.display = 'none';
-    (document.getElementById('format-main-content') as HTMLElement).style.display = '';
-    buildFormatCmdPreview(device, isDisk);
-    startProbe(device, fstype);
-  }
-
+  buildFormatCmdPreview(device, isDisk);
+  startProbe(device, fstype);
   showScreen('format-setup');
 }
 
@@ -782,7 +774,9 @@ function buildFormatCmdPreview(device: string, isDisk: boolean): void {
   } else {
     lines.push('doas mkfs.' + fstype + ' -L ' + label + ' ' + part);
   }
-  document.getElementById('format-cmd-preview')!.textContent = lines.join('\n');
+  document.getElementById('format-cmd-preview')!.innerHTML = lines
+    .map((l) => `<div>${escHtml(l)}</div>`)
+    .join('');
 }
 
 function startProbe(device: string, fstype: string | undefined): void {
@@ -1039,28 +1033,6 @@ document.getElementById('btn-run-backup')!.addEventListener('click', startBackup
 
 document.getElementById('btn-format-cancel')!.addEventListener('click', () => {
   showScreen('drive-select');
-});
-document.getElementById('btn-format-mounted-back')!.addEventListener('click', () => {
-  showScreen('drive-select');
-});
-document.getElementById('btn-format-eject')!.addEventListener('click', async (e) => {
-  const btn = e.currentTarget as HTMLButtonElement;
-  btn.disabled = true;
-  setStatusBar('Ejecting…', true);
-  const drive = drives.find((d) => d.device === selectedDevice);
-  if (!drive) { btn.disabled = false; setStatusBar(''); return; }
-  try {
-    await invoke('unmount_device', { device: drive.device, luksParent: drive.luks_parent ?? null });
-  } catch (_) {}
-  await refreshDrives();
-  setStatusBar('');
-  const updated = drives.find((d) => d.device === (drive.luks_parent || drive.device));
-  if (updated) {
-    selectedDevice = updated.device;
-    enterFormatSetup(updated.device, updated.fstype, updated.dev_type === 'disk');
-  } else {
-    showScreen('drive-select');
-  }
 });
 
 ['format-label', 'format-pass1', 'format-pass2', 'format-confirm-input'].forEach((id) => {
