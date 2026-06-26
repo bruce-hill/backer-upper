@@ -9,6 +9,7 @@ use crate::config::{Config, SyncJob};
 use crate::drives::{self, Drive};
 use crate::format::{probe_drive, run_format, DriveInfo, FormatProgress};
 use crate::state::AppState;
+use crate::wipe::{self, WipeProgress};
 
 // ── Serializable response types ──────────────────────────────────────────────
 
@@ -285,6 +286,14 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
         let _ = std::process::Command::new("kill").args([&pid.to_string()]).status();
     }
 
+    // Cancel any running wipe so the thread stops writing before unmount.
+    {
+        let s = state.lock().unwrap();
+        let mut p = s.wipe_progress.lock().unwrap();
+        p.cancelled = true;
+        p.finished = true;
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
         let result = match (&mapper_name, &mounted_device) {
             (Some(cleartext_dev), Some(luks_dev)) => drives::udisksctl_unmount(cleartext_dev)
@@ -310,6 +319,7 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     s.config_dirty = false;
     s.backup_finished_msg = None;
     s.backup_running = false;
+    s.wipe_running = false;
     s.is_restore = false;
     Ok(())
 }
@@ -355,11 +365,17 @@ pub fn start_backup(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
         if s.backup_running {
             return Err("A backup or restore is already in progress".to_owned());
         }
+        if s.wipe_running {
+            return Err("Cannot start backup while free space wipe is running".to_owned());
+        }
         match (s.config.clone(), s.mount_point.clone()) {
             (Some(c), Some(m)) => (c, m, std::sync::Arc::clone(&s.progress)),
             _ => return Err("No config or mount point".to_owned()),
         }
     };
+
+    // Clean up any fill file left over from a crashed wipe (before the snapshot is taken).
+    wipe::cleanup_fill_file(&mp);
 
     {
         let mut p = progress.lock().unwrap();
@@ -375,6 +391,47 @@ pub fn start_backup(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
 
     run_backup(&cfg, &mp, progress);
     Ok(())
+}
+
+#[tauri::command]
+pub fn start_wipe_free_space(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let (mp, progress) = {
+        let mut s = state.lock().unwrap();
+        if s.backup_running {
+            return Err("Cannot wipe free space while a backup is running".to_owned());
+        }
+        if s.wipe_running {
+            return Err("A wipe is already in progress".to_owned());
+        }
+        let mp = match &s.mount_point {
+            Some(mp) => mp.clone(),
+            None => return Err("No drive mounted".to_owned()),
+        };
+        let progress = std::sync::Arc::clone(&s.wipe_progress);
+        s.wipe_running = true;
+        (mp, progress)
+    };
+    wipe::run_wipe(mp, progress);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_wipe_progress(state: State<'_, Mutex<AppState>>) -> WipeProgress {
+    let mut s = state.lock().unwrap();
+    let p = s.wipe_progress.lock().unwrap().clone();
+    if s.wipe_running && p.finished {
+        s.wipe_running = false;
+    }
+    p
+}
+
+#[tauri::command]
+pub fn cancel_wipe(state: State<'_, Mutex<AppState>>) {
+    let s = state.lock().unwrap();
+    let mut p = s.wipe_progress.lock().unwrap();
+    if !p.finished {
+        p.cancelled = true;
+    }
 }
 
 #[tauri::command]
@@ -661,6 +718,8 @@ pub fn start_restore(
             _ => return Err("No config or mount point".to_owned()),
         }
     };
+
+    wipe::cleanup_fill_file(&mp);
 
     // Validate snapshot name before using it in a path join.
     // Slashes would allow escaping the snapshots directory; the whitelist

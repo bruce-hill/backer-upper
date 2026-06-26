@@ -104,6 +104,14 @@ interface FormatProgress {
   log: string[];
 }
 
+interface WipeProgress {
+  bytes_written: number;
+  total_bytes: number;
+  finished: boolean;
+  error?: string;
+  cancelled: boolean;
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let drives: DriveInfo[] = [];
@@ -111,6 +119,7 @@ let selectedDevice: string | null = null;
 let editingJobIdx: number | null = null;
 let backupPollId: ReturnType<typeof setInterval> | null = null;
 let formatPollId: ReturnType<typeof setInterval> | null = null;
+let wipePollId: ReturnType<typeof setInterval> | null = null;
 let probePollId: ReturnType<typeof setInterval> | null = null;
 let formatDevice: string | null = null;
 let formatIsDisk = false;
@@ -393,6 +402,7 @@ async function ejectDrive(): Promise<void> {
   const btn = document.getElementById('btn-eject') as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   setStatusBar('Ejecting…', true);
+  if (wipePollId) { clearInterval(wipePollId); wipePollId = null; }
   try {
     await invoke('eject');
     selectedDevice = null;
@@ -903,6 +913,87 @@ function updateFormatUI(p: FormatProgress): void {
   }
 }
 
+// ── Wipe Free Space ───────────────────────────────────────────────────────────
+
+async function startWipe(): Promise<void> {
+  try {
+    await invoke('start_wipe_free_space');
+  } catch (e) {
+    alert('Could not start wipe: ' + String(e));
+    return;
+  }
+  showScreen('wipe');
+  (document.getElementById('wipe-status-banner') as HTMLElement).style.display = 'none';
+  document.getElementById('wipe-size-info')!.textContent = '';
+  (document.getElementById('wipe-progress-bar') as HTMLElement).style.width = '0%';
+  document.getElementById('wipe-progress-label')!.textContent = '0%';
+  document.getElementById('wipe-btn-row')!.innerHTML =
+    '<button id="btn-wipe-cancel">Cancel</button>';
+  document.getElementById('btn-wipe-cancel')!.addEventListener('click', () =>
+    invoke('cancel_wipe'),
+  );
+  if (wipePollId) clearInterval(wipePollId);
+  wipePollId = setInterval(pollWipe, 500);
+}
+
+async function pollWipe(): Promise<void> {
+  const p = await invoke<WipeProgress>('get_wipe_progress');
+  updateWipeUI(p);
+  if (p.finished) {
+    clearInterval(wipePollId!);
+    wipePollId = null;
+  }
+}
+
+function updateWipeUI(p: WipeProgress): void {
+  const banner = document.getElementById('wipe-status-banner')!;
+  const bar = document.getElementById('wipe-progress-bar') as HTMLElement;
+  const label = document.getElementById('wipe-progress-label')!;
+  const sizeInfo = document.getElementById('wipe-size-info')!;
+
+  if (p.error) {
+    banner.className = 'banner danger';
+    banner.textContent = 'Error: ' + p.error;
+    banner.style.display = '';
+  } else if (p.cancelled) {
+    banner.className = 'banner warning';
+    banner.textContent = 'Wipe cancelled. Free space was partially overwritten.';
+    banner.style.display = '';
+  } else if (p.finished) {
+    banner.className = 'banner success';
+    banner.textContent = 'Done — free space has been zeroed.';
+    banner.style.display = '';
+  }
+
+  const frac = p.total_bytes > 0 ? Math.min(p.bytes_written / p.total_bytes, 1) : 0;
+  const pct = Math.round(frac * 100);
+  bar.style.width = `${pct}%`;
+  label.textContent = `${pct}%`;
+
+  if (p.total_bytes > 0) {
+    sizeInfo.textContent = `${formatBytes(p.bytes_written)} of ${formatBytes(p.total_bytes)}`;
+  } else if (!p.finished) {
+    sizeInfo.textContent = 'Measuring available space…';
+  }
+
+  if (p.finished) {
+    const btnRow = document.getElementById('wipe-btn-row')!;
+    btnRow.innerHTML = '';
+    const backBtn = document.createElement('button');
+    backBtn.textContent = '← Back to Config';
+    backBtn.addEventListener('click', () => showScreen('config'));
+    btnRow.appendChild(backBtn);
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1e12) return (bytes / 1e12).toFixed(1) + ' TB';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 function parseSnapshotDate(name: string): Date | null {
@@ -993,6 +1084,7 @@ document.getElementById('password-input')!.addEventListener('keydown', (e: Keybo
 document.getElementById('btn-eject')!.addEventListener('click', ejectDrive);
 document.getElementById('btn-add-job')!.addEventListener('click', addJob);
 document.getElementById('btn-save-config')!.addEventListener('click', saveConfig);
+document.getElementById('btn-wipe-free-space')!.addEventListener('click', startWipe);
 document.getElementById('btn-restore')!.addEventListener('click', goToRestore);
 document.getElementById('btn-next')!.addEventListener('click', goToPreview);
 

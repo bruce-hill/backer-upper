@@ -4,6 +4,7 @@ mod config;
 mod drives;
 mod format;
 mod state;
+mod wipe;
 
 use std::sync::Mutex;
 use state::AppState;
@@ -37,6 +38,9 @@ fn main() {
             commands::list_snapshots,
             commands::preview_restore,
             commands::start_restore,
+            commands::start_wipe_free_space,
+            commands::get_wipe_progress,
+            commands::cancel_wipe,
             commands::quit,
         ])
         .run(tauri::generate_context!())

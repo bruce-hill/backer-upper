@@ -327,15 +327,15 @@ fn build_format_steps(device: &str, is_disk: bool, label: &str, fstype: &str, en
 
     let partition = if is_disk {
         let part = crate::drives::partition_path(device);
-        steps.push(no_preview(FormatAction::Advance("Zeroing drive".into())));
-        steps.push(doas_step(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"]));
+        steps.push(no_preview(FormatAction::Advance("Clearing drive".into())));
+        steps.push(doas_step(&["wipefs", "-a", device]));
         steps.push(no_preview(FormatAction::Advance("Creating partition".into())));
         steps.push(doas_step(&["parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%"]));
         steps.push(no_preview(FormatAction::WaitForDevice(part.clone())));
         part
     } else {
-        steps.push(no_preview(FormatAction::Advance("Zeroing partition".into())));
-        steps.push(doas_step(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"]));
+        steps.push(no_preview(FormatAction::Advance("Clearing partition".into())));
+        steps.push(doas_step(&["wipefs", "-a", device]));
         device.to_owned()
     };
 

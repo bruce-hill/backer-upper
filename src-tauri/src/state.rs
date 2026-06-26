@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::backup::{BackupProgress, SharedProgress};
 use crate::config::Config;
 use crate::format::{DriveInfo, FormatProgress, SharedDriveInfo, SharedFormatProgress};
+use crate::wipe::{SharedWipeProgress, WipeProgress};
 
 pub struct AppState {
     pub mount_point: Option<PathBuf>,
@@ -17,6 +18,8 @@ pub struct AppState {
     pub format_progress: SharedFormatProgress,
     pub format_running: bool,
     pub format_drive_info: SharedDriveInfo,
+    pub wipe_progress: SharedWipeProgress,
+    pub wipe_running: bool,
     pub status_msg: Option<String>,
     pub is_restore: bool,
 }
@@ -35,6 +38,8 @@ impl AppState {
             format_progress: Arc::new(Mutex::new(FormatProgress::default())),
             format_running: false,
             format_drive_info: Arc::new(Mutex::new(DriveInfo::default())),
+            wipe_progress: Arc::new(Mutex::new(WipeProgress::default())),
+            wipe_running: false,
             status_msg: None,
             is_restore: false,
         }

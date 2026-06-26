@@ -79,6 +79,7 @@
           <button id="btn-add-job">+ Add Job</button>
           <button id="btn-save-config" style="display: none" class="primary">Save Config</button>
           <span id="unsaved-indicator" style="display: none">Unsaved changes</span>
+          <button id="btn-wipe-free-space" class="danger-outline">Wipe Free Space…</button>
           <button id="btn-restore" class="danger-outline">Restore from Backup…</button>
           <button id="btn-next" class="primary">Begin Backup…</button>
         </div>
@@ -143,6 +144,24 @@
         <div class="btn-row">
           <button id="btn-preview-cancel">← Back</button>
           <button id="btn-run-backup" class="primary">▶ Run Backup</button>
+        </div>
+      </div>
+
+      <!-- Wipe Free Space -->
+      <div id="screen-wipe" class="screen">
+        <h2>Wiping Free Space…</h2>
+        <div id="wipe-status-banner" class="banner" style="display: none"></div>
+        <p class="muted">
+          Writing zeros to all unallocated space on the drive. This cannot be cancelled cleanly
+          mid-way — let it finish for best results.
+        </p>
+        <div class="progress-wrap">
+          <div id="wipe-progress-bar" class="progress-bar" style="width: 0%"></div>
+          <span class="progress-label" id="wipe-progress-label">0%</span>
+        </div>
+        <div class="muted" id="wipe-size-info"></div>
+        <div class="btn-row" id="wipe-btn-row">
+          <button id="btn-wipe-cancel">Cancel</button>
         </div>
       </div>
 
