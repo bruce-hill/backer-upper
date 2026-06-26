@@ -304,7 +304,11 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = match (&mapper_name, &mounted_device) {
             (Some(cleartext_dev), Some(luks_dev)) => drives::udisksctl_unmount(cleartext_dev)
-                .and_then(|()| drives::udisksctl_lock(luks_dev)),
+                .and_then(|()| if cleartext_dev.starts_with("/dev/mapper/") {
+                    drives::doas_luks_close()
+                } else {
+                    drives::udisksctl_lock(luks_dev)
+                }),
             (None, Some(dev)) => drives::udisksctl_unmount(dev),
             _ => Ok(()),
         };

@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use zbus::blocking::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::zvariant::OwnedValue;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Drive {
@@ -238,42 +239,67 @@ pub fn udisksctl_power_off(device: &str) -> Result<()> {
     Ok(())
 }
 
+const LUKS_MAPPER: &str = "backer-upper";
+
 pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathBuf)> {
-    let obj = udisks2_obj_path(device);
-    let conn = udisks2_conn()?;
+    let cleartext_dev = format!("/dev/mapper/{LUKS_MAPPER}");
 
-    let enc = udisks2_proxy(&conn, &obj, "org.freedesktop.UDisks2.Encrypted")?;
-    let opts: HashMap<String, OwnedValue> = HashMap::new();
-    let cleartext: OwnedObjectPath = enc
-        .call("Unlock", &(passphrase, opts))
-        .map_err(|e| {
-            let s = e.to_string();
-            if s.contains("No key available")
-                || s.contains("Failed to activate")
-                || s.contains("Operation not permitted")
-            {
-                anyhow::anyhow!("Wrong passphrase")
-            } else {
-                anyhow::anyhow!("Unlock failed: {s}")
-            }
-        })?;
+    if std::path::Path::new(&cleartext_dev).exists() {
+        anyhow::bail!(
+            "{cleartext_dev} already exists — a previous session may not have closed cleanly.\n\
+             Run: doas cryptsetup luksClose {LUKS_MAPPER}"
+        );
+    }
 
-    let block = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Block")?;
-    let dev_bytes: Vec<u8> = block
-        .get_property("PreferredDevice")
-        .context("failed to read cleartext PreferredDevice")?;
-    let cleartext_dev = std::str::from_utf8(&dev_bytes)
-        .unwrap_or_default()
-        .trim_end_matches('\0')
-        .to_owned();
+    let mut child = Command::new("doas")
+        .args(["cryptsetup", "luksOpen", "--key-file", "-", device, LUKS_MAPPER])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn: doas cryptsetup luksOpen")?;
 
-    let fs = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Filesystem")?;
-    let mount_opts: HashMap<String, OwnedValue> = HashMap::new();
-    let mount_path: String = fs
-        .call("Mount", &(mount_opts,))
-        .context("udisks2 Mount of cleartext device failed")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+    let out = child.wait_with_output().context("wait_with_output")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("No key available") || stderr.contains("Failed to activate") {
+            anyhow::bail!("Wrong passphrase");
+        }
+        anyhow::bail!("luksOpen failed: {}", stderr.trim());
+    }
 
-    Ok((cleartext_dev, PathBuf::from(mount_path)))
+    // Give udev a moment to register the new device with udisks2.
+    let _ = Command::new("udevadm").args(["settle"]).status();
+    for _ in 0..20 {
+        if std::path::Path::new(&cleartext_dev).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let mp = mount_device(&cleartext_dev).map_err(|e| {
+        let _ = doas_luks_close();
+        e
+    })?;
+
+    Ok((cleartext_dev, mp))
+}
+
+pub fn doas_luks_close() -> Result<()> {
+    let out = Command::new("doas")
+        .args(["cryptsetup", "luksClose", LUKS_MAPPER])
+        .output()
+        .context("failed to spawn: doas cryptsetup luksClose")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "luksClose failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 pub fn partition_path(disk: &str) -> String {
