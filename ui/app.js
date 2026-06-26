@@ -15,7 +15,7 @@ let formatIsDisk = false;
 // ── Screen routing ────────────────────────────────────────────────────────────
 
 function showScreen(name) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
   document.getElementById('screen-' + name).classList.add('active');
   currentScreen = name;
 }
@@ -41,14 +41,16 @@ function renderDriveList() {
   if (drives.length === 0) {
     el.innerHTML = '<div class="empty-state">No removable drives detected.</div>';
   } else {
-    el.innerHTML = drives.map((d, i) => {
-      const badges = [];
-      if (d.tran) badges.push(`<span class="badge badge-usb">${d.tran.toUpperCase()}</span>`);
-      if (d.fstype && d.fstype !== 'crypto_LUKS') badges.push(`<span class="badge badge-fs">${d.fstype}</span>`);
-      if (d.is_encrypted) badges.push('<span class="badge badge-luks">LUKS</span>');
-      if (d.is_mounted) badges.push('<span class="badge badge-mounted">mounted</span>');
-      const selected = d.device === selectedDevice ? ' selected' : '';
-      return `
+    el.innerHTML = drives
+      .map((d, i) => {
+        const badges = [];
+        if (d.tran) badges.push(`<span class="badge badge-usb">${d.tran.toUpperCase()}</span>`);
+        if (d.fstype && d.fstype !== 'crypto_LUKS')
+          badges.push(`<span class="badge badge-fs">${d.fstype}</span>`);
+        if (d.is_encrypted) badges.push('<span class="badge badge-luks">LUKS</span>');
+        if (d.is_mounted) badges.push('<span class="badge badge-mounted">mounted</span>');
+        const selected = d.device === selectedDevice ? ' selected' : '';
+        return `
         <div class="drive-item${selected}" data-device="${d.device}" data-idx="${i}">
           <div>
             <div class="drive-name">${escHtml(d.display_name)}</div>
@@ -57,9 +59,10 @@ function renderDriveList() {
           </div>
           <div class="drive-size">${escHtml(d.size || '')}</div>
         </div>`;
-    }).join('');
+      })
+      .join('');
 
-    el.querySelectorAll('.drive-item').forEach(item => {
+    el.querySelectorAll('.drive-item').forEach((item) => {
       item.addEventListener('click', () => {
         selectedDevice = item.dataset.device;
         renderDriveList();
@@ -72,7 +75,7 @@ function renderDriveList() {
 }
 
 function updateDriveSelectButtons() {
-  const drive = drives.find(d => d.device === selectedDevice);
+  const drive = drives.find((d) => d.device === selectedDevice);
   document.getElementById('btn-open-drive').disabled = !drive;
   const canFormat = drive && (drive.dev_type === 'disk' || drive.dev_type === 'part');
   document.getElementById('btn-format-drive').disabled = !canFormat;
@@ -86,7 +89,7 @@ async function openSelectedDrive() {
     if (result.error) {
       setError('drive-select-error', result.error);
     } else if (result.needs_password) {
-      const drive = drives.find(d => d.device === selectedDevice);
+      const drive = drives.find((d) => d.device === selectedDevice);
       document.getElementById('password-heading').textContent =
         'Unlock: ' + (drive ? drive.display_name : selectedDevice);
       document.getElementById('password-input').value = '';
@@ -138,10 +141,13 @@ function renderConfig(mountPoint, config) {
 function renderJobsTable(jobs) {
   const tbody = document.getElementById('jobs-tbody');
   if (jobs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:16px">No jobs configured.</td></tr>';
+    tbody.innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:16px">No jobs configured.</td></tr>';
     return;
   }
-  tbody.innerHTML = jobs.map((j, i) => `
+  tbody.innerHTML = jobs
+    .map(
+      (j, i) => `
     <tr>
       <td>${escHtml(j.name)}</td>
       <td class="mono">${escHtml(j.source)}</td>
@@ -154,7 +160,9 @@ function renderJobsTable(jobs) {
         <button onclick="editJob(${i})">Edit</button>
       </td>
     </tr>
-  `).join('');
+  `
+    )
+    .join('');
 }
 
 async function toggleJob(idx, enabled) {
@@ -199,7 +207,7 @@ async function editJob(idx) {
   document.getElementById('job-excludes').value = (job?.excludes || []).join('\n');
   document.getElementById('job-enabled').checked = job?.enabled ?? true;
   const mode = job?.mode || 'Backup';
-  document.querySelectorAll('input[name="job-mode"]').forEach(r => {
+  document.querySelectorAll('input[name="job-mode"]').forEach((r) => {
     r.checked = r.value === mode;
   });
   document.getElementById('btn-job-delete').style.display = idx < jobs.length ? '' : 'none';
@@ -211,8 +219,11 @@ async function saveJob() {
   const config = status.config;
   if (!config) return;
 
-  const excludes = document.getElementById('job-excludes').value
-    .split('\n').map(s => s.trim()).filter(Boolean);
+  const excludes = document
+    .getElementById('job-excludes')
+    .value.split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const modeEl = document.querySelector('input[name="job-mode"]:checked');
   const job = {
@@ -283,11 +294,15 @@ async function goToPreview() {
     document.getElementById('btn-run-backup').disabled = true;
   } else {
     empty.style.display = 'none';
-    el.innerHTML = cmds.map(c => `
+    el.innerHTML = cmds
+      .map(
+        (c) => `
       <div class="preview-cmd-block">
         <div class="cmd-name">${escHtml(c.name)}</div>
         <pre>${escHtml(c.cmd)}</pre>
-      </div>`).join('');
+      </div>`
+      )
+      .join('');
     document.getElementById('btn-run-backup').disabled = false;
   }
   showScreen('preview');
@@ -390,9 +405,9 @@ function updateBackupUI(p) {
   // Log
   const logEl = document.getElementById('backup-log');
   const wasAtBottom = logEl.scrollHeight - logEl.clientHeight <= logEl.scrollTop + 4;
-  logEl.innerHTML = p.log_lines.map(l =>
-    `<div class="${l.startsWith('>>>') ? 'log-cmd' : ''}">${escHtml(l)}</div>`
-  ).join('');
+  logEl.innerHTML = p.log_lines
+    .map((l) => `<div class="${l.startsWith('>>>') ? 'log-cmd' : ''}">${escHtml(l)}</div>`)
+    .join('');
   if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
 
   // Swap buttons when done
@@ -428,7 +443,7 @@ async function enterFormatSetup(device, fstype, isDisk) {
   formatDevice = device;
   formatIsDisk = isDisk;
 
-  const drive = drives.find(d => d.device === device);
+  const drive = drives.find((d) => d.device === device);
   const infoLine = drive
     ? `${drive.device} · ${drive.display_name} · ${drive.size || 'unknown size'}`
     : device;
@@ -459,9 +474,7 @@ async function enterFormatSetup(device, fstype, isDisk) {
 
 function buildFormatCmdPreview(device, isDisk) {
   const label = document.getElementById('format-label').value.trim() || '<label>';
-  const part = isDisk
-    ? (device.match(/\d$/) ? device + 'p1' : device + '1')
-    : device;
+  const part = isDisk ? (device.match(/\d$/) ? device + 'p1' : device + '1') : device;
   const lines = [];
   if (isDisk) {
     lines.push('doas wipefs -a ' + device);
@@ -493,8 +506,12 @@ async function pollProbe() {
   let html = '';
   if (info.lsblk_text) html += escHtml(info.lsblk_text) + '\n';
   if (info.note) html += '\n<span style="color:#fcd34d">' + escHtml(info.note) + '</span>\n';
-  if (info.df_text) html += '\n<span style="color:#93c5fd">Disk usage (df -h):</span>\n' + escHtml(info.df_text);
-  if (info.ls_text) html += '\n<span style="color:#93c5fd">Top-level contents (ls -lAh):</span>\n' + escHtml(info.ls_text);
+  if (info.df_text)
+    html += '\n<span style="color:#93c5fd">Disk usage (df -h):</span>\n' + escHtml(info.df_text);
+  if (info.ls_text)
+    html +=
+      '\n<span style="color:#93c5fd">Top-level contents (ls -lAh):</span>\n' +
+      escHtml(info.ls_text);
   document.getElementById('format-probe-content').innerHTML = html || '(no info)';
 }
 
@@ -509,8 +526,13 @@ function validateFormat() {
   if (confirm && confirm !== formatDevice) msg = 'Must match exactly: ' + formatDevice;
 
   const msgEl = document.getElementById('format-validation-msg');
-  if (msg) { msgEl.textContent = msg; msgEl.style.display = ''; }
-  else { msgEl.textContent = ''; msgEl.style.display = 'none'; }
+  if (msg) {
+    msgEl.textContent = msg;
+    msgEl.style.display = '';
+  } else {
+    msgEl.textContent = '';
+    msgEl.style.display = 'none';
+  }
 
   const ok = label && p1 && p1 === p2 && confirm === formatDevice;
   document.getElementById('btn-do-format').disabled = !ok;
@@ -587,9 +609,9 @@ function updateFormatUI(p) {
 
   const logEl = document.getElementById('format-log');
   const wasAtBottom = logEl.scrollHeight - logEl.clientHeight <= logEl.scrollTop + 4;
-  logEl.innerHTML = p.log.map(l =>
-    `<div class="${l.startsWith('>>>') ? 'log-cmd' : ''}">${escHtml(l)}</div>`
-  ).join('');
+  logEl.innerHTML = p.log
+    .map((l) => `<div class="${l.startsWith('>>>') ? 'log-cmd' : ''}">${escHtml(l)}</div>`)
+    .join('');
   if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
 
   if (p.finished) {
@@ -622,7 +644,7 @@ document.getElementById('btn-open-drive').addEventListener('click', openSelected
 
 document.getElementById('btn-format-drive').addEventListener('click', () => {
   if (!selectedDevice) return;
-  const drive = drives.find(d => d.device === selectedDevice);
+  const drive = drives.find((d) => d.device === selectedDevice);
   if (!drive) return;
   enterFormatSetup(drive.device, drive.fstype, drive.dev_type === 'disk');
 });
@@ -631,7 +653,7 @@ document.getElementById('btn-password-cancel').addEventListener('click', () => {
   showScreen('drive-select');
 });
 document.getElementById('btn-password-unlock').addEventListener('click', unlockDrive);
-document.getElementById('password-input').addEventListener('keydown', e => {
+document.getElementById('password-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') unlockDrive();
 });
 
@@ -660,13 +682,13 @@ document.getElementById('btn-format-mounted-back').addEventListener('click', () 
   showScreen('drive-select');
 });
 document.getElementById('btn-format-eject').addEventListener('click', async () => {
-  const drive = drives.find(d => d.device === selectedDevice);
+  const drive = drives.find((d) => d.device === selectedDevice);
   if (!drive) return;
   try {
     await invoke('eject');
   } catch (_) {}
   await refreshDrives();
-  const updated = drives.find(d => d.device === (drive.luks_parent || drive.device));
+  const updated = drives.find((d) => d.device === (drive.luks_parent || drive.device));
   if (updated) {
     selectedDevice = updated.device;
     enterFormatSetup(updated.device, updated.fstype, updated.dev_type === 'disk');
@@ -675,7 +697,7 @@ document.getElementById('btn-format-eject').addEventListener('click', async () =
   }
 });
 
-['format-label', 'format-pass1', 'format-pass2', 'format-confirm-input'].forEach(id => {
+['format-label', 'format-pass1', 'format-pass2', 'format-confirm-input'].forEach((id) => {
   document.getElementById(id).addEventListener('input', validateFormat);
 });
 document.getElementById('format-label').addEventListener('input', () => {

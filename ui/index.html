@@ -1,229 +1,249 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Backer-Upper</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <header>
-    <h1>Backer-Upper</h1>
-    <span id="status-bar"></span>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Backer-Upper</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Backer-Upper</h1>
+      <span id="status-bar"></span>
+    </header>
 
-  <main>
-
-    <!-- DriveSelect -->
-    <div id="screen-drive-select" class="screen">
-      <h2>Select Drive</h2>
-      <div id="drive-list" class="drive-list">
-        <div class="empty-state">Loading drives…</div>
-      </div>
-      <div class="btn-row">
-        <button id="btn-refresh">↻ Refresh</button>
-        <button id="btn-open-drive" class="primary" disabled>Open Drive</button>
-        <button id="btn-format-drive" disabled>Format for Backup</button>
-      </div>
-      <div id="drive-select-error" class="error-text" style="display:none"></div>
-    </div>
-
-    <!-- PasswordPrompt -->
-    <div id="screen-password" class="screen">
-      <h2 id="password-heading">Unlock Drive</h2>
-      <div class="card">
-        <p style="margin-bottom:12px">This drive is LUKS-encrypted. Enter the passphrase to unlock it.</p>
-        <div class="form-grid">
-          <label>Passphrase</label>
-          <input type="password" id="password-input" placeholder="Passphrase">
+    <main>
+      <!-- DriveSelect -->
+      <div id="screen-drive-select" class="screen">
+        <h2>Select Drive</h2>
+        <div id="drive-list" class="drive-list">
+          <div class="empty-state">Loading drives…</div>
         </div>
-        <div id="password-error" class="error-text" style="display:none"></div>
         <div class="btn-row">
-          <button id="btn-password-cancel">Cancel</button>
-          <button id="btn-password-unlock" class="primary">Unlock</button>
+          <button id="btn-refresh">↻ Refresh</button>
+          <button id="btn-open-drive" class="primary" disabled>Open Drive</button>
+          <button id="btn-format-drive" disabled>Format for Backup</button>
         </div>
-      </div>
-    </div>
-
-    <!-- ConfigEditor -->
-    <div id="screen-config" class="screen">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <h2 style="margin-bottom:0">Backup Configuration</h2>
-        <button id="btn-eject">⏏ Eject</button>
-      </div>
-      <div class="meta-row">
-        <span id="config-mount-point" class="muted"></span>
-        <span id="config-last-backup" class="muted"></span>
+        <div id="drive-select-error" class="error-text" style="display: none"></div>
       </div>
 
-      <div class="card" style="padding:0;overflow:hidden">
-        <table class="jobs-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Source</th>
-              <th>Mode</th>
-              <th>Enabled</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="jobs-tbody">
-          </tbody>
-        </table>
-      </div>
-
-      <div class="btn-row">
-        <button id="btn-add-job">+ Add Job</button>
-        <button id="btn-save-config" style="display:none" class="primary">Save Config</button>
-        <span id="unsaved-indicator" style="display:none;color:var(--warning);font-size:13px">Unsaved changes</span>
-        <button id="btn-next" class="primary" style="margin-left:auto">Next →</button>
-      </div>
-      <div id="config-error" class="error-text" style="display:none"></div>
-    </div>
-
-    <!-- JobEdit -->
-    <div id="screen-job-edit" class="screen">
-      <h2 id="job-edit-heading">Edit Job</h2>
-      <div class="card">
-        <div class="form-grid">
-          <label>Name</label>
-          <input type="text" id="job-name" placeholder="e.g. Home">
-          <label>Source folder</label>
-          <input type="text" id="job-source" placeholder="/home/user">
-          <label>Dest (on drive)</label>
-          <input type="text" id="job-dest" placeholder="home">
-          <label>Mode</label>
-          <div class="radio-group">
-            <label class="radio-option">
-              <input type="radio" name="job-mode" value="Backup">
-              <span>
-                <strong>Backup</strong>
-                <span class="radio-desc">Mirror — deletes from backup when deleted locally</span>
-              </span>
-            </label>
-            <label class="radio-option">
-              <input type="radio" name="job-mode" value="Media">
-              <span>
-                <strong>Media</strong>
-                <span class="radio-desc">Archive — keeps all files even if deleted locally</span>
-              </span>
-            </label>
+      <!-- PasswordPrompt -->
+      <div id="screen-password" class="screen">
+        <h2 id="password-heading">Unlock Drive</h2>
+        <div class="card">
+          <p style="margin-bottom: 12px">
+            This drive is LUKS-encrypted. Enter the passphrase to unlock it.
+          </p>
+          <div class="form-grid">
+            <label>Passphrase</label>
+            <input type="password" id="password-input" placeholder="Passphrase" />
           </div>
-          <label>Enabled</label>
-          <input type="checkbox" id="job-enabled" style="width:auto">
-        </div>
-        <label style="font-weight:500;font-size:13px;color:var(--text-muted)">Excludes (one per line, rsync patterns)</label>
-        <textarea id="job-excludes" rows="4" style="margin-top:6px" placeholder=".git&#10;node_modules&#10;*.tmp"></textarea>
-        <div class="btn-row">
-          <button id="btn-job-cancel">Cancel</button>
-          <button id="btn-job-save" class="primary">Save Job</button>
-          <button id="btn-job-delete" class="danger" style="margin-left:auto">Delete Job</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Preview -->
-    <div id="screen-preview" class="screen">
-      <h2>Review Backup Commands</h2>
-      <p class="muted" style="margin-bottom:12px">These rsync commands will run in order:</p>
-      <div id="preview-commands"></div>
-      <div id="preview-empty" class="empty-state" style="display:none">No enabled jobs.</div>
-      <div class="btn-row">
-        <button id="btn-preview-cancel">Cancel</button>
-        <button id="btn-run-backup" class="primary">▶ Run Backup</button>
-      </div>
-    </div>
-
-    <!-- Backup -->
-    <div id="screen-backup" class="screen">
-      <h2>Backup</h2>
-      <div id="backup-status-banner" class="banner" style="display:none"></div>
-      <div id="backup-job-info" style="margin-bottom:8px"></div>
-
-      <div class="progress-wrap">
-        <div id="backup-progress-bar" class="progress-bar" style="width:0%"></div>
-        <div id="backup-progress-label" class="progress-label">0%</div>
-      </div>
-
-      <div class="muted" id="backup-elapsed" style="margin-bottom:12px"></div>
-
-      <details>
-        <summary>Output Log</summary>
-        <div id="backup-log" class="log-box"></div>
-      </details>
-
-      <div class="btn-row" id="backup-btn-row">
-        <button id="btn-backup-pause">Pause</button>
-        <button id="btn-backup-cancel">Cancel</button>
-      </div>
-    </div>
-
-    <!-- FormatSetup -->
-    <div id="screen-format-setup" class="screen">
-      <h2>Format Drive for Backup</h2>
-
-      <div id="format-mounted-error" class="banner danger" style="display:none">
-        <strong>Cannot format: this drive is currently mounted.</strong>
-        Unmount it first before formatting.
-        <div class="btn-row">
-          <button id="btn-format-mounted-back">Back</button>
-          <button id="btn-format-eject">Eject Drive</button>
-        </div>
-      </div>
-
-      <div id="format-main-content">
-        <div class="banner danger">
-          <strong>DANGER — ALL DATA ON THIS DRIVE WILL BE PERMANENTLY DESTROYED</strong>
-          <span id="format-drive-info-line"></span>
-        </div>
-
-        <div class="card" style="background:#111827;border-color:#374151">
-          <div id="format-probe-content" style="color:#c8d6e5;font-family:monospace;font-size:12px;white-space:pre-wrap">
-            <em style="color:#9ca3af">Reading drive contents…</em>
+          <div id="password-error" class="error-text" style="display: none"></div>
+          <div class="btn-row">
+            <button id="btn-password-cancel">Cancel</button>
+            <button id="btn-password-unlock" class="primary">Unlock</button>
           </div>
         </div>
+      </div>
 
-        <details style="margin-bottom:14px">
-          <summary>Commands that will run</summary>
-          <div id="format-cmd-preview" class="log-box" style="margin-top:8px"></div>
-        </details>
+      <!-- ConfigEditor -->
+      <div id="screen-config" class="screen">
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+          "
+        >
+          <h2 style="margin-bottom: 0">Backup Configuration</h2>
+          <button id="btn-eject">⏏ Eject</button>
+        </div>
+        <div class="meta-row">
+          <span id="config-mount-point" class="muted"></span>
+          <span id="config-last-backup" class="muted"></span>
+        </div>
 
+        <div class="card" style="padding: 0; overflow: hidden">
+          <table class="jobs-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Source</th>
+                <th>Mode</th>
+                <th>Enabled</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="jobs-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="btn-row">
+          <button id="btn-add-job">+ Add Job</button>
+          <button id="btn-save-config" style="display: none" class="primary">Save Config</button>
+          <span id="unsaved-indicator" style="display: none; color: var(--warning); font-size: 13px"
+            >Unsaved changes</span
+          >
+          <button id="btn-next" class="primary" style="margin-left: auto">Next →</button>
+        </div>
+        <div id="config-error" class="error-text" style="display: none"></div>
+      </div>
+
+      <!-- JobEdit -->
+      <div id="screen-job-edit" class="screen">
+        <h2 id="job-edit-heading">Edit Job</h2>
         <div class="card">
           <div class="form-grid">
-            <label>Drive label</label>
-            <input type="text" id="format-label" value="Backup">
-            <label>Passphrase</label>
-            <input type="password" id="format-pass1" placeholder="Choose a passphrase">
-            <label>Confirm passphrase</label>
-            <input type="password" id="format-pass2" placeholder="Repeat passphrase">
-            <label id="format-confirm-label" style="color:var(--danger)">Type device path to confirm</label>
-            <input type="text" id="format-confirm-input" placeholder="/dev/sdX">
+            <label>Name</label>
+            <input type="text" id="job-name" placeholder="e.g. Home" />
+            <label>Source folder</label>
+            <input type="text" id="job-source" placeholder="/home/user" />
+            <label>Dest (on drive)</label>
+            <input type="text" id="job-dest" placeholder="home" />
+            <label>Mode</label>
+            <div class="radio-group">
+              <label class="radio-option">
+                <input type="radio" name="job-mode" value="Backup" />
+                <span>
+                  <strong>Backup</strong>
+                  <span class="radio-desc">Mirror — deletes from backup when deleted locally</span>
+                </span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="job-mode" value="Media" />
+                <span>
+                  <strong>Media</strong>
+                  <span class="radio-desc">Archive — keeps all files even if deleted locally</span>
+                </span>
+              </label>
+            </div>
+            <label>Enabled</label>
+            <input type="checkbox" id="job-enabled" style="width: auto" />
           </div>
-          <div id="format-validation-msg" style="display:none" class="error-text"></div>
-          <div id="format-error" class="error-text" style="display:none"></div>
-
+          <label style="font-weight: 500; font-size: 13px; color: var(--text-muted)"
+            >Excludes (one per line, rsync patterns)</label
+          >
+          <textarea
+            id="job-excludes"
+            rows="4"
+            style="margin-top: 6px"
+            placeholder=".git&#10;node_modules&#10;*.tmp"
+          ></textarea>
           <div class="btn-row">
-            <button id="btn-format-cancel">Cancel</button>
-            <button id="btn-do-format" class="danger" disabled>Format Drive</button>
+            <button id="btn-job-cancel">Cancel</button>
+            <button id="btn-job-save" class="primary">Save Job</button>
+            <button id="btn-job-delete" class="danger" style="margin-left: auto">Delete Job</button>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- FormatProgress -->
-    <div id="screen-format-progress" class="screen">
-      <h2>Formatting Drive…</h2>
-      <div id="format-progress-banner" class="banner" style="display:none"></div>
-      <div id="format-step-label" style="margin-bottom:8px;font-size:14px"></div>
-      <div id="format-step-dots" class="step-dots" style="margin-bottom:12px"></div>
-      <div id="format-log" class="log-box"></div>
-      <div class="btn-row" id="format-done-btn-row" style="display:none">
-        <button id="btn-format-done" class="primary">Back to Drive Select</button>
+      <!-- Preview -->
+      <div id="screen-preview" class="screen">
+        <h2>Review Backup Commands</h2>
+        <p class="muted" style="margin-bottom: 12px">These rsync commands will run in order:</p>
+        <div id="preview-commands"></div>
+        <div id="preview-empty" class="empty-state" style="display: none">No enabled jobs.</div>
+        <div class="btn-row">
+          <button id="btn-preview-cancel">Cancel</button>
+          <button id="btn-run-backup" class="primary">▶ Run Backup</button>
+        </div>
       </div>
-    </div>
 
-  </main>
+      <!-- Backup -->
+      <div id="screen-backup" class="screen">
+        <h2>Backup</h2>
+        <div id="backup-status-banner" class="banner" style="display: none"></div>
+        <div id="backup-job-info" style="margin-bottom: 8px"></div>
 
-  <script src="app.js"></script>
-</body>
+        <div class="progress-wrap">
+          <div id="backup-progress-bar" class="progress-bar" style="width: 0%"></div>
+          <div id="backup-progress-label" class="progress-label">0%</div>
+        </div>
+
+        <div class="muted" id="backup-elapsed" style="margin-bottom: 12px"></div>
+
+        <details>
+          <summary>Output Log</summary>
+          <div id="backup-log" class="log-box"></div>
+        </details>
+
+        <div class="btn-row" id="backup-btn-row">
+          <button id="btn-backup-pause">Pause</button>
+          <button id="btn-backup-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- FormatSetup -->
+      <div id="screen-format-setup" class="screen">
+        <h2>Format Drive for Backup</h2>
+
+        <div id="format-mounted-error" class="banner danger" style="display: none">
+          <strong>Cannot format: this drive is currently mounted.</strong>
+          Unmount it first before formatting.
+          <div class="btn-row">
+            <button id="btn-format-mounted-back">Back</button>
+            <button id="btn-format-eject">Eject Drive</button>
+          </div>
+        </div>
+
+        <div id="format-main-content">
+          <div class="banner danger">
+            <strong>DANGER — ALL DATA ON THIS DRIVE WILL BE PERMANENTLY DESTROYED</strong>
+            <span id="format-drive-info-line"></span>
+          </div>
+
+          <div class="card" style="background: #111827; border-color: #374151">
+            <div
+              id="format-probe-content"
+              style="color: #c8d6e5; font-family: monospace; font-size: 12px; white-space: pre-wrap"
+            >
+              <em style="color: #9ca3af">Reading drive contents…</em>
+            </div>
+          </div>
+
+          <details style="margin-bottom: 14px">
+            <summary>Commands that will run</summary>
+            <div id="format-cmd-preview" class="log-box" style="margin-top: 8px"></div>
+          </details>
+
+          <div class="card">
+            <div class="form-grid">
+              <label>Drive label</label>
+              <input type="text" id="format-label" value="Backup" />
+              <label>Passphrase</label>
+              <input type="password" id="format-pass1" placeholder="Choose a passphrase" />
+              <label>Confirm passphrase</label>
+              <input type="password" id="format-pass2" placeholder="Repeat passphrase" />
+              <label id="format-confirm-label" style="color: var(--danger)"
+                >Type device path to confirm</label
+              >
+              <input type="text" id="format-confirm-input" placeholder="/dev/sdX" />
+            </div>
+            <div id="format-validation-msg" style="display: none" class="error-text"></div>
+            <div id="format-error" class="error-text" style="display: none"></div>
+
+            <div class="btn-row">
+              <button id="btn-format-cancel">Cancel</button>
+              <button id="btn-do-format" class="danger" disabled>Format Drive</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FormatProgress -->
+      <div id="screen-format-progress" class="screen">
+        <h2>Formatting Drive…</h2>
+        <div id="format-progress-banner" class="banner" style="display: none"></div>
+        <div id="format-step-label" style="margin-bottom: 8px; font-size: 14px"></div>
+        <div id="format-step-dots" class="step-dots" style="margin-bottom: 12px"></div>
+        <div id="format-log" class="log-box"></div>
+        <div class="btn-row" id="format-done-btn-row" style="display: none">
+          <button id="btn-format-done" class="primary">Back to Drive Select</button>
+        </div>
+      </div>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
 </html>

@@ -1,0 +1,11 @@
+{
+  "name": "backer-upper",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write 'ui/**/*.{js,html,css}'",
+    "format:check": "prettier --check 'ui/**/*.{js,html,css}'"
+  },
+  "devDependencies": {
+    "prettier": "^3.0.0"
+  }
+}
