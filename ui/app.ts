@@ -113,6 +113,7 @@ let formatPollId: ReturnType<typeof setInterval> | null = null;
 let probePollId: ReturnType<typeof setInterval> | null = null;
 let formatDevice: string | null = null;
 let formatIsDisk = false;
+let operationIsRestore = false;
 
 // ── Screen routing ────────────────────────────────────────────────────────────
 
@@ -439,6 +440,8 @@ async function startBackup(): Promise<void> {
     alert('Failed to start backup: ' + e);
     return;
   }
+  operationIsRestore = false;
+  document.querySelector<HTMLElement>('#screen-backup h2')!.textContent = 'Backup';
   showScreen('backup');
   resetBackupUI();
   startBackupPoll();
@@ -556,6 +559,107 @@ async function showConfigFromBackup(): Promise<void> {
   const status = await invoke<AppStatus>('get_status');
   if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
   enterConfig(status.mount_point, status.config);
+}
+
+// ── Restore screen ────────────────────────────────────────────────────────────
+
+async function goToRestore(): Promise<void> {
+  const [snapshots, status] = await Promise.all([
+    invoke<string[]>('list_snapshots').catch(() => [] as string[]),
+    invoke<AppStatus>('get_status'),
+  ]);
+  const jobs = status.config?.jobs || [];
+
+  const snapshotEl = document.getElementById('restore-snapshot-list')!;
+  const snapshotOptions = [
+    { value: '', label: '<strong>Current backup</strong> — most recent rsync run' },
+    ...snapshots.slice().reverse().map((s) => ({ value: s, label: escHtml(s) })),
+  ];
+  snapshotEl.innerHTML = snapshotOptions
+    .map(
+      (opt, i) => `
+    <label class="radio-option">
+      <input type="radio" name="restore-snapshot" value="${escHtml(opt.value)}" ${i === 0 ? 'checked' : ''} />
+      <span>${opt.label}</span>
+    </label>`
+    )
+    .join('');
+
+  const jobsEl = document.getElementById('restore-jobs-list')!;
+  if (jobs.length === 0) {
+    jobsEl.innerHTML = '<p class="muted">No jobs configured.</p>';
+  } else {
+    jobsEl.innerHTML = jobs
+      .map(
+        (j, i) => `
+      <label class="radio-option">
+        <input type="checkbox" class="restore-job-check" data-idx="${i}" checked />
+        <span>
+          <strong>${escHtml(j.name)}</strong>
+          <span class="radio-desc">${escHtml(String(j.destination))} → ${escHtml(j.source)}</span>
+        </span>
+      </label>`
+      )
+      .join('');
+  }
+
+  (document.getElementById('restore-delete-extra') as HTMLInputElement).checked = false;
+  (document.getElementById('restore-confirm-input') as HTMLInputElement).value = '';
+  setError('restore-error', '');
+  (document.getElementById('restore-validation-msg') as HTMLElement).style.display = 'none';
+  (document.getElementById('btn-do-restore') as HTMLButtonElement).disabled = true;
+
+  showScreen('restore');
+}
+
+function validateRestore(): void {
+  const confirm = (document.getElementById('restore-confirm-input') as HTMLInputElement).value;
+  const hasJobs = Array.from(
+    document.querySelectorAll<HTMLInputElement>('.restore-job-check')
+  ).some((cb) => cb.checked);
+
+  const msgEl = document.getElementById('restore-validation-msg')!;
+  if (confirm && confirm !== 'RESTORE') {
+    msgEl.textContent = 'Type exactly: RESTORE';
+    msgEl.style.display = '';
+  } else {
+    msgEl.textContent = '';
+    msgEl.style.display = 'none';
+  }
+
+  (document.getElementById('btn-do-restore') as HTMLButtonElement).disabled = !(
+    confirm === 'RESTORE' && hasJobs
+  );
+}
+
+async function doRestore(): Promise<void> {
+  const snapshotInput = document.querySelector<HTMLInputElement>(
+    'input[name="restore-snapshot"]:checked'
+  );
+  const snapshotVal = snapshotInput?.value ?? '';
+  const snapshot = snapshotVal === '' ? null : snapshotVal;
+
+  const jobIndices = Array.from(
+    document.querySelectorAll<HTMLInputElement>('.restore-job-check')
+  )
+    .filter((cb) => cb.checked)
+    .map((cb) => parseInt(cb.dataset.idx!, 10));
+
+  const deleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement).checked;
+
+  setError('restore-error', '');
+  try {
+    await invoke('start_restore', { snapshot, jobIndices, deleteExtra });
+  } catch (e) {
+    setError('restore-error', String(e));
+    return;
+  }
+
+  operationIsRestore = true;
+  document.querySelector<HTMLElement>('#screen-backup h2')!.textContent = 'Restore';
+  showScreen('backup');
+  resetBackupUI();
+  startBackupPoll();
 }
 
 // ── Format Setup screen ───────────────────────────────────────────────────────
@@ -793,6 +897,7 @@ document.getElementById('password-input')!.addEventListener('keydown', (e: Keybo
 document.getElementById('btn-eject')!.addEventListener('click', ejectDrive);
 document.getElementById('btn-add-job')!.addEventListener('click', addJob);
 document.getElementById('btn-save-config')!.addEventListener('click', saveConfig);
+document.getElementById('btn-restore')!.addEventListener('click', goToRestore);
 document.getElementById('btn-next')!.addEventListener('click', goToPreview);
 
 document.getElementById('btn-job-cancel')!.addEventListener('click', async () => {
@@ -801,6 +906,13 @@ document.getElementById('btn-job-cancel')!.addEventListener('click', async () =>
 });
 document.getElementById('btn-job-save')!.addEventListener('click', saveJob);
 document.getElementById('btn-job-delete')!.addEventListener('click', deleteJob);
+
+document.getElementById('btn-restore-cancel')!.addEventListener('click', async () => {
+  const status = await invoke<AppStatus>('get_status');
+  enterConfig(status.mount_point!, status.config!);
+});
+document.getElementById('screen-restore')!.addEventListener('input', validateRestore);
+document.getElementById('btn-do-restore')!.addEventListener('click', doRestore);
 
 document.getElementById('btn-preview-cancel')!.addEventListener('click', async () => {
   const status = await invoke<AppStatus>('get_status');
