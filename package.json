@@ -2,10 +2,13 @@
   "name": "backer-upper",
   "private": true,
   "scripts": {
-    "format": "prettier --write 'ui/**/*.{js,html,css}'",
-    "format:check": "prettier --check 'ui/**/*.{js,html,css}'"
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "format": "prettier --write 'ui/**/*.{ts,html,css}'",
+    "format:check": "prettier --check 'ui/**/*.{ts,html,css}'"
   },
   "devDependencies": {
-    "prettier": "^3.0.0"
+    "prettier": "^3.0.0",
+    "typescript": "^6.0.3"
   }
 }
