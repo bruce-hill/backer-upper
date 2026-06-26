@@ -742,6 +742,22 @@ p.muted {
   font-size: 15px;
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+}
+
 details summary {
   cursor: pointer;
   font-size: 15px;

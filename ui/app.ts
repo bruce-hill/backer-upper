@@ -121,8 +121,13 @@ function showScreen(name: string): void {
   document.getElementById('screen-' + name)!.classList.add('active');
 }
 
-function setStatusBar(msg: string): void {
-  document.getElementById('status-bar')!.textContent = msg || '';
+function setStatusBar(msg: string, loading = false): void {
+  const bar = document.getElementById('status-bar')!;
+  if (loading) {
+    bar.innerHTML = `<span class="spinner"></span> ${escHtml(msg)}`;
+  } else {
+    bar.textContent = msg || '';
+  }
 }
 
 // ── Drive Select screen ───────────────────────────────────────────────────────
@@ -379,6 +384,9 @@ async function saveConfig(): Promise<void> {
 }
 
 async function ejectDrive(): Promise<void> {
+  const btn = document.getElementById('btn-eject') as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  setStatusBar('Ejecting…', true);
   try {
     await invoke('eject');
     selectedDevice = null;
@@ -386,6 +394,9 @@ async function ejectDrive(): Promise<void> {
     showScreen('drive-select');
   } catch (e) {
     setError('config-error', String(e));
+    if (btn) btn.disabled = false;
+  } finally {
+    setStatusBar('');
   }
 }
 
@@ -807,13 +818,17 @@ document.getElementById('btn-format-cancel')!.addEventListener('click', () => {
 document.getElementById('btn-format-mounted-back')!.addEventListener('click', () => {
   showScreen('drive-select');
 });
-document.getElementById('btn-format-eject')!.addEventListener('click', async () => {
+document.getElementById('btn-format-eject')!.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  setStatusBar('Ejecting…', true);
   const drive = drives.find((d) => d.device === selectedDevice);
-  if (!drive) return;
+  if (!drive) { btn.disabled = false; setStatusBar(''); return; }
   try {
     await invoke('eject');
   } catch (_) {}
   await refreshDrives();
+  setStatusBar('');
   const updated = drives.find((d) => d.device === (drive.luks_parent || drive.device));
   if (updated) {
     selectedDevice = updated.device;
