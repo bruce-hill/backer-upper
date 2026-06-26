@@ -322,8 +322,8 @@ fn do_format(
     validate_device(device, is_disk, progress)?;
 
     let partition: String = if is_disk {
-        advance(progress, "Wiping drive");
-        doas_run(&["wipefs", "-a", device], progress)?;
+        advance(progress, "Zeroing drive");
+        doas_run(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"], progress)?;
         advance(progress, "Creating partition");
         doas_run(
             &["parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%"],
@@ -352,8 +352,8 @@ fn do_format(
         log(progress, &format!("✓ {part} is ready"));
         part
     } else {
-        advance(progress, "Wiping partition");
-        doas_run(&["wipefs", "-a", device], progress)?;
+        advance(progress, "Zeroing partition");
+        doas_run(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"], progress)?;
         device.to_owned()
     };
 
@@ -392,6 +392,7 @@ fn do_format(
         }
         log(progress, &format!("✓ {mapper_dev} is ready"));
 
+        log(progress, &format!("$ doas {mkfs_cmd} -L {label} {mapper_dev}"));
         let mkfs_result = Command::new("doas")
             .args([mkfs_cmd.as_str(), "-L", label, &mapper_dev])
             .stdin(Stdio::null())
@@ -450,7 +451,7 @@ pub fn run_format(
             Ok(()) => {
                 let mut p = progress.lock().unwrap();
                 p.finished = true;
-                p.step = total;
+                p.step = p.total_steps;
                 p.step_name = "Done".to_owned();
                 p.log.push(String::new());
                 p.log.push(format!(
