@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::State;
 
-use crate::backup::{format_duration, rsync_command_string, run_backup, BackupProgress};
+use crate::backup::{format_duration, list_snapshot_names, rsync_command_string, run_backup, run_restore, BackupProgress};
 use crate::config::{Config, SyncJob};
 use crate::drives::{self, Drive};
 use crate::format::{probe_drive, run_format, DriveInfo, FormatProgress};
@@ -268,10 +268,22 @@ pub fn delete_job(state: State<'_, Mutex<AppState>>, idx: usize) -> Result<Confi
 
 #[tauri::command]
 pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let (mapper_name, mounted_device) = {
+    let (mapper_name, mounted_device, child_pid) = {
         let s = state.lock().unwrap();
-        (s.mapper_name.clone(), s.mounted_device.clone())
+        let pid = s.progress.lock().unwrap().child_pid;
+        (s.mapper_name.clone(), s.mounted_device.clone(), pid)
     };
+
+    // Stop any running backup/restore before unmounting.
+    if let Some(pid) = child_pid {
+        let s = state.lock().unwrap();
+        let mut p = s.progress.lock().unwrap();
+        p.cancelled = true;
+        p.finished = true;
+        drop(p);
+        drop(s);
+        let _ = std::process::Command::new("kill").args([&pid.to_string()]).status();
+    }
 
     tauri::async_runtime::spawn_blocking(move || {
         let result = match (&mapper_name, &mounted_device) {
@@ -297,6 +309,8 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     s.config = None;
     s.config_dirty = false;
     s.backup_finished_msg = None;
+    s.backup_running = false;
+    s.is_restore = false;
     Ok(())
 }
 
@@ -321,6 +335,9 @@ pub fn preview_commands(state: State<'_, Mutex<AppState>>) -> Vec<PreviewCommand
 pub fn start_backup(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let (cfg, mp, progress) = {
         let s = state.lock().unwrap();
+        if s.backup_running {
+            return Err("A backup or restore is already in progress".to_owned());
+        }
         match (s.config.clone(), s.mount_point.clone()) {
             (Some(c), Some(m)) => (c, m, std::sync::Arc::clone(&s.progress)),
             _ => return Err("No config or mount point".to_owned()),
@@ -335,6 +352,7 @@ pub fn start_backup(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     {
         let mut s = state.lock().unwrap();
         s.backup_running = true;
+        s.is_restore = false;
         s.backup_finished_msg = None;
     }
 
@@ -351,19 +369,23 @@ pub fn get_backup_progress(state: State<'_, Mutex<AppState>>) -> BackupProgressJ
 
     if s.backup_running && (p.finished || p.error.is_some()) {
         s.backup_running = false;
+        let is_restore = s.is_restore;
+        let op = if is_restore { "Restore" } else { "Backup" };
         if p.cancelled {
-            s.backup_finished_msg = Some("Backup cancelled.".to_owned());
+            s.backup_finished_msg = Some(format!("{op} cancelled."));
         } else if let Some(ref err) = p.error {
-            s.backup_finished_msg = Some(format!("Backup failed: {err}"));
+            s.backup_finished_msg = Some(format!("{op} failed: {err}"));
         } else {
             let elapsed = format_duration(p.elapsed_secs as u64);
-            s.backup_finished_msg = Some(format!("Backup complete in {elapsed}!"));
-            if let Some(cfg) = &mut s.config {
-                cfg.last_backup = Some(chrono::Local::now());
-            }
-            if !s.config_dirty {
-                if let (Some(cfg), Some(mp)) = (&s.config, &s.mount_point) {
-                    let _ = cfg.save(mp);
+            s.backup_finished_msg = Some(format!("{op} complete in {elapsed}!"));
+            if !is_restore {
+                if let Some(cfg) = &mut s.config {
+                    cfg.last_backup = Some(chrono::Local::now());
+                }
+                if !s.config_dirty {
+                    if let (Some(cfg), Some(mp)) = (&s.config, &s.mount_point) {
+                        let _ = cfg.save(mp);
+                    }
                 }
             }
         }
@@ -496,6 +518,75 @@ pub fn get_status(state: State<'_, Mutex<AppState>>) -> AppStatus {
         status_msg: s.status_msg.clone(),
         backup_running: s.backup_running,
     }
+}
+
+#[tauri::command]
+pub async fn list_snapshots(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
+    let mp = {
+        let s = state.lock().unwrap();
+        s.mount_point.clone()
+    };
+    match mp {
+        Some(mp) => tauri::async_runtime::spawn_blocking(move || list_snapshot_names(&mp))
+            .await
+            .map_err(|e| e.to_string()),
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+pub fn start_restore(
+    state: State<'_, Mutex<AppState>>,
+    snapshot: Option<String>,
+    job_indices: Vec<usize>,
+    delete_extra: bool,
+) -> Result<(), String> {
+    let (cfg, mp, progress) = {
+        let s = state.lock().unwrap();
+        if s.backup_running {
+            return Err("A backup or restore is already in progress".to_owned());
+        }
+        match (s.config.clone(), s.mount_point.clone()) {
+            (Some(c), Some(m)) => (c, m, std::sync::Arc::clone(&s.progress)),
+            _ => return Err("No config or mount point".to_owned()),
+        }
+    };
+
+    // Validate snapshot name before using it in a path join.
+    // Slashes would allow escaping the snapshots directory; the whitelist
+    // check catches everything else (read_dir never yields ".." entries).
+    if let Some(ref snap) = snapshot {
+        if snap.contains('/') {
+            return Err("Invalid snapshot name".to_owned());
+        }
+        if !list_snapshot_names(&mp).contains(snap) {
+            return Err(format!("Snapshot not found: {snap}"));
+        }
+    }
+
+    let jobs: Vec<SyncJob> = job_indices
+        .iter()
+        .filter_map(|&i| cfg.jobs.get(i))
+        .cloned()
+        .collect();
+
+    if jobs.is_empty() {
+        return Err("No jobs selected".to_owned());
+    }
+
+    {
+        let mut p = progress.lock().unwrap();
+        *p = BackupProgress::default();
+    }
+    {
+        let mut s = state.lock().unwrap();
+        s.backup_running = true;
+        s.is_restore = true;
+        s.backup_finished_msg = None;
+    }
+
+    run_restore(jobs, mp, snapshot, delete_extra, progress);
+    Ok(())
 }
 
 fn load_config(mp: &Path) -> Config {
