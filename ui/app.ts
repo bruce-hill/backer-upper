@@ -762,6 +762,8 @@ window.ejectFromBackup = ejectFromBackup;
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
+document.getElementById('btn-close-app')!.addEventListener('click', () => invoke('quit'));
+
 document.getElementById('btn-refresh')!.addEventListener('click', refreshDrives);
 
 document.getElementById('btn-open-drive')!.addEventListener('click', openSelectedDrive);
