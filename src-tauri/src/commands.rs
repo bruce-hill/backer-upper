@@ -273,26 +273,28 @@ pub fn delete_job(state: State<'_, Mutex<AppState>>, idx: usize) -> Result<Confi
 }
 
 #[tauri::command]
-pub fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let (mapper_name, mounted_device) = {
         let s = state.lock().unwrap();
         (s.mapper_name.clone(), s.mounted_device.clone())
     };
 
-    let result = match (&mapper_name, &mounted_device) {
-        (Some(cleartext_dev), Some(luks_dev)) => drives::udisksctl_unmount(cleartext_dev)
-            .and_then(|()| drives::udisksctl_lock(luks_dev)),
-        (None, Some(dev)) => drives::udisksctl_unmount(dev),
-        _ => Ok(()),
-    };
-
-    if result.is_ok() {
-        if let Some(dev) = &mounted_device {
-            let _ = drives::udisksctl_power_off(dev);
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = match (&mapper_name, &mounted_device) {
+            (Some(cleartext_dev), Some(luks_dev)) => drives::udisksctl_unmount(cleartext_dev)
+                .and_then(|()| drives::udisksctl_lock(luks_dev)),
+            (None, Some(dev)) => drives::udisksctl_unmount(dev),
+            _ => Ok(()),
+        };
+        if result.is_ok() {
+            if let Some(dev) = &mounted_device {
+                let _ = drives::udisksctl_power_off(dev);
+            }
         }
-    }
-
-    result.map_err(|e| e.to_string())?;
+        result.map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     let mut s = state.lock().unwrap();
     s.mount_point = None;
