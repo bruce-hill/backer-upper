@@ -20,6 +20,7 @@ pub struct Drive {
     pub model: Option<String>,
     pub vendor: Option<String>,
     pub tran: Option<String>,
+    pub dev_type: String, // "disk", "part", "crypt", etc.
 }
 
 impl Drive {
@@ -155,6 +156,7 @@ fn collect_drives(
         model: meta.model,
         vendor: meta.vendor,
         tran: meta.tran,
+        dev_type: dev_type.to_owned(),
     });
 }
 
@@ -289,3 +291,12 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
     Ok((cleartext_dev, PathBuf::from(mount_path)))
 }
 
+/// Given a whole-disk device path, return the first partition's path.
+/// e.g. /dev/sda → /dev/sda1, /dev/nvme0n1 → /dev/nvme0n1p1
+pub fn partition_path(disk: &str) -> String {
+    if disk.chars().last().map_or(false, |c| c.is_ascii_digit()) {
+        format!("{disk}p1")
+    } else {
+        format!("{disk}1")
+    }
+}

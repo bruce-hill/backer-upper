@@ -8,6 +8,7 @@ use egui::{Color32, RichText, Stroke};
 use crate::backup::{rsync_command_string, run_backup, BackupProgress, SharedProgress};
 use crate::config::{Config, SyncJob, SyncMode};
 use crate::drives::{self, Drive};
+use crate::format::{probe_drive, run_format, DriveInfo, FormatProgress, SharedDriveInfo, SharedFormatProgress};
 use style::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +19,8 @@ enum Screen {
     Preview,
     Backup,
     JobEdit(usize),
+    FormatSetup,
+    FormatProgress,
 }
 
 pub struct App {
@@ -42,6 +45,15 @@ pub struct App {
     edit_mode: SyncMode,
     edit_enabled: bool,
     status_msg: Option<String>,
+    // Format drive state
+    format_label: String,
+    format_passphrase: String,
+    format_passphrase2: String,
+    format_confirm: String, // user must type the device path to unlock the button
+    format_error: Option<String>,
+    format_progress: SharedFormatProgress,
+    format_running: bool,
+    format_drive_info: SharedDriveInfo, // populated by background probe on entering FormatSetup
 }
 
 impl Default for App {
@@ -84,6 +96,14 @@ impl Default for App {
             edit_mode: SyncMode::Backup,
             edit_enabled: true,
             status_msg: None,
+            format_label: "Backup".to_owned(),
+            format_passphrase: String::new(),
+            format_passphrase2: String::new(),
+            format_confirm: String::new(),
+            format_error: None,
+            format_progress: Arc::new(Mutex::new(FormatProgress::default())),
+            format_running: false,
+            format_drive_info: Arc::new(Mutex::new(DriveInfo::default())),
         }
     }
 }
@@ -343,6 +363,24 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
 
+        if self.format_running {
+            let finished = {
+                let p = self.format_progress.lock().unwrap();
+                p.finished
+            };
+            if finished {
+                self.format_running = false;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+
+        // Keep repainting while the drive probe is running so results appear promptly.
+        if self.screen == Screen::FormatSetup
+            && !self.format_drive_info.lock().unwrap().finished
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+
         draw_title_bar(ctx);
 
         egui::CentralPanel::default()
@@ -359,6 +397,8 @@ impl eframe::App for App {
                     Screen::Preview => self.ui_preview(ui),
                     Screen::Backup => self.ui_backup(ui),
                     Screen::JobEdit(idx) => self.ui_job_edit(ui, idx),
+                    Screen::FormatSetup => self.ui_format_setup(ui),
+                    Screen::FormatProgress => self.ui_format_progress(ui),
                 }
 
                 if let Some(msg) = &self.status_msg.clone() {
@@ -435,6 +475,30 @@ impl App {
             ui.add_enabled_ui(can_open, |ui| {
                 if xp_button_ui(ui, "Open Drive", false).clicked() {
                     self.try_mount_selected();
+                }
+            });
+            ui.add_space(8.0);
+            let can_format = self.selected_drive_idx
+                .and_then(|i| self.drives.get(i))
+                .map(|d| d.dev_type == "disk" || d.dev_type == "part")
+                .unwrap_or(false);
+            ui.add_enabled_ui(can_format, |ui| {
+                if xp_button_ui(ui, "Format for Backup", false).clicked() {
+                    if let Some(drive) = self.selected_drive_idx
+                        .and_then(|i| self.drives.get(i))
+                        .cloned()
+                    {
+                        self.format_label = "Backup".to_owned();
+                        self.format_passphrase.clear();
+                        self.format_passphrase2.clear();
+                        self.format_confirm.clear();
+                        self.format_error = None;
+                        self.format_drive_info = probe_drive(
+                            drive.device.clone(),
+                            drive.fstype.clone(),
+                        );
+                        self.screen = Screen::FormatSetup;
+                    }
                 }
             });
         });
@@ -970,6 +1034,373 @@ impl App {
         }
 
         let _ = bar_rect;
+    }
+
+    fn ui_format_setup(&mut self, ui: &mut egui::Ui) {
+        let drive = match self.selected_drive_idx.and_then(|i| self.drives.get(i)).cloned() {
+            Some(d) => d,
+            None => { self.screen = Screen::DriveSelect; return; }
+        };
+
+        ui.heading("Format Drive for Backup");
+        ui.separator();
+        ui.add_space(6.0);
+
+        // Hard block if the drive is currently mounted — formatting a live filesystem is never safe.
+        if drive.is_mounted() {
+            egui::Frame::new()
+                .fill(Color32::from_rgb(180, 30, 30))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.colored_label(
+                        Color32::WHITE,
+                        RichText::new("Cannot format: this drive is currently mounted.")
+                            .strong(),
+                    );
+                    ui.colored_label(
+                        Color32::from_rgb(255, 180, 180),
+                        "Unmount it first before formatting.",
+                    );
+                });
+            ui.add_space(10.0);
+            let mut do_eject = false;
+            ui.horizontal(|ui| {
+                if xp_button_ui(ui, "Back", false).clicked() {
+                    self.screen = Screen::DriveSelect;
+                }
+                ui.add_space(8.0);
+                if xp_button_ui(ui, "Eject Drive", false).clicked() {
+                    do_eject = true;
+                }
+            });
+            if do_eject {
+                let result = if let Some(ref luks_parent) = drive.luks_parent {
+                    drives::udisksctl_unmount(&drive.device)
+                        .and_then(|()| drives::udisksctl_lock(luks_parent))
+                } else {
+                    drives::udisksctl_unmount(&drive.device)
+                };
+                match result {
+                    Ok(()) => {
+                        self.refresh_drives();
+                        // After ejecting a LUKS drive the mapper disappears; look for the
+                        // underlying LUKS partition (luks_parent) in the refreshed list.
+                        let target = drive.luks_parent.as_deref().unwrap_or(&drive.device);
+                        if let Some(idx) = self.drives.iter().position(|d| d.device == target) {
+                            self.selected_drive_idx = Some(idx);
+                            let d = self.drives[idx].clone();
+                            self.format_drive_info = probe_drive(d.device.clone(), d.fstype.clone());
+                            // stay on FormatSetup — the is_mounted check will now pass
+                        } else {
+                            self.screen = Screen::DriveSelect;
+                            self.status_msg = Some("Drive ejected. Replug it and try again.".to_owned());
+                        }
+                    }
+                    Err(e) => {
+                        self.status_msg = Some(format!("Eject failed: {e}"));
+                    }
+                }
+            }
+            return;
+        }
+
+        // ── Danger banner ──────────────────────────────────────────────────────
+        egui::Frame::new()
+            .fill(Color32::from_rgb(160, 20, 20))
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.colored_label(
+                    Color32::WHITE,
+                    RichText::new("DANGER — ALL DATA ON THIS DRIVE WILL BE PERMANENTLY DESTROYED")
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.colored_label(
+                    Color32::from_rgb(255, 180, 180),
+                    RichText::new(format!(
+                        "  {}  ·  {}  ·  {}",
+                        drive.device,
+                        drive.display_name(),
+                        drive.size.as_deref().unwrap_or("unknown size"),
+                    ))
+                    .monospace(),
+                );
+                if let Some(fs) = &drive.fstype {
+                    ui.colored_label(
+                        Color32::from_rgb(255, 160, 160),
+                        format!("  Currently contains: {fs}"),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.colored_label(
+                    Color32::from_rgb(255, 200, 200),
+                    "  This action CANNOT be undone. Verify you have the correct drive before proceeding.",
+                );
+            });
+
+        ui.add_space(8.0);
+
+        // ── Drive contents probe ───────────────────────────────────────────────
+        {
+            let probe = self.format_drive_info.lock().unwrap().clone();
+            let frame_color = Color32::from_rgb(22, 22, 22);
+            let text_color = Color32::from_rgb(200, 205, 200);
+            let hdr_color = Color32::from_rgb(160, 200, 240);
+
+            egui::Frame::new()
+                .fill(frame_color)
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    if !probe.finished {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new("Reading drive contents…")
+                                    .color(Color32::from_rgb(160, 160, 160))
+                                    .small(),
+                            );
+                        });
+                    } else {
+                        // lsblk output (always shown)
+                        if !probe.lsblk_text.is_empty() {
+                            ui.monospace(RichText::new(&probe.lsblk_text).size(11.0).color(text_color));
+                            ui.add_space(4.0);
+                        }
+
+                        // Advisory note (encrypted / no filesystem / mount error)
+                        if let Some(note) = &probe.note {
+                            ui.label(
+                                RichText::new(note)
+                                    .color(Color32::from_rgb(200, 170, 100))
+                                    .small(),
+                            );
+                        }
+
+                        // df -h output
+                        if let Some(df) = &probe.df_text {
+                            ui.label(RichText::new("Disk usage (df -h):").color(hdr_color).small().strong());
+                            ui.monospace(RichText::new(df.trim()).size(11.0).color(text_color));
+                            ui.add_space(4.0);
+                        }
+
+                        // ls output
+                        if let Some(ls) = &probe.ls_text {
+                            ui.label(RichText::new("Top-level contents (ls -lAh):").color(hdr_color).small().strong());
+                            egui::ScrollArea::vertical()
+                                .id_salt("ls_scroll")
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    ui.monospace(RichText::new(ls.trim()).size(11.0).color(text_color));
+                                });
+                        }
+                    }
+                });
+        }
+
+        ui.add_space(6.0);
+
+        // ── Command preview ────────────────────────────────────────────────────
+        let is_disk = drive.dev_type == "disk";
+        let partition = if is_disk {
+            drives::partition_path(&drive.device)
+        } else {
+            drive.device.clone()
+        };
+        let label_preview = if self.format_label.trim().is_empty() {
+            "<label>"
+        } else {
+            self.format_label.trim()
+        };
+
+        ui.label(RichText::new("Commands that will run (in order):").small().color(Color32::DARK_GRAY));
+        ui.add_space(2.0);
+        egui::Frame::new()
+            .fill(Color32::from_rgb(22, 22, 22))
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                let cmd_color = Color32::from_rgb(150, 210, 150);
+                let note_color = Color32::from_rgb(120, 140, 120);
+                if is_disk {
+                    ui.monospace(RichText::new(format!("doas wipefs -a {}", drive.device)).size(11.0).color(cmd_color));
+                    ui.monospace(RichText::new(format!("doas parted -s {} mklabel gpt mkpart primary 0% 100%", drive.device)).size(11.0).color(cmd_color));
+                } else {
+                    ui.monospace(RichText::new(format!("doas wipefs -a {}", drive.device)).size(11.0).color(cmd_color));
+                }
+                ui.monospace(RichText::new(format!("doas cryptsetup luksFormat --type luks2 {partition}")).size(11.0).color(cmd_color));
+                ui.monospace(RichText::new(format!("doas cryptsetup luksOpen {partition} backer-upper-format")).size(11.0).color(cmd_color));
+                ui.monospace(RichText::new(format!("doas mkfs.btrfs -L {label_preview} /dev/mapper/backer-upper-format")).size(11.0).color(cmd_color));
+                ui.monospace(RichText::new("doas cryptsetup luksClose backer-upper-format").size(11.0).color(cmd_color));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Pre-flight checks (run before any destructive step): block device exists, is removable, is not mounted, mapper name is free.").size(10.0).color(note_color));
+            });
+
+        ui.add_space(8.0);
+
+        // ── Inputs ─────────────────────────────────────────────────────────────
+        egui::Grid::new("format_setup_grid")
+            .num_columns(2)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Drive label:");
+                ui.text_edit_singleline(&mut self.format_label);
+                ui.end_row();
+
+                ui.label("Passphrase:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.format_passphrase)
+                        .password(true)
+                        .desired_width(240.0),
+                );
+                ui.end_row();
+
+                ui.label("Confirm passphrase:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.format_passphrase2)
+                        .password(true)
+                        .desired_width(240.0),
+                );
+                ui.end_row();
+
+                // GitHub-style confirmation: user must type the exact device path
+                ui.label(
+                    RichText::new(format!("Type {} to confirm:", drive.device))
+                        .color(Color32::from_rgb(180, 60, 60)),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.format_confirm)
+                        .hint_text(&drive.device)
+                        .desired_width(240.0),
+                );
+                ui.end_row();
+            });
+
+        if let Some(err) = &self.format_error.clone() {
+            ui.add_space(4.0);
+            ui.colored_label(Color32::RED, err);
+        }
+
+        ui.add_space(6.0);
+
+        let label_ok = !self.format_label.trim().is_empty();
+        let pass_match = self.format_passphrase == self.format_passphrase2;
+        let pass_ok = !self.format_passphrase.is_empty() && pass_match;
+        let confirm_ok = self.format_confirm.trim() == drive.device.as_str();
+        let can_format = label_ok && pass_ok && confirm_ok;
+
+        if !self.format_passphrase2.is_empty() && !pass_match {
+            ui.colored_label(Color32::RED, "Passphrases do not match.");
+            ui.add_space(2.0);
+        }
+        if !self.format_confirm.is_empty() && !confirm_ok {
+            ui.colored_label(
+                Color32::from_rgb(180, 80, 0),
+                format!("Must match exactly: {}", drive.device),
+            );
+            ui.add_space(2.0);
+        }
+
+        ui.horizontal(|ui| {
+            if xp_button_ui(ui, "Cancel", false).clicked() {
+                self.screen = Screen::DriveSelect;
+                self.format_passphrase.clear();
+                self.format_passphrase2.clear();
+                self.format_confirm.clear();
+                self.format_error = None;
+            }
+            ui.add_space(8.0);
+            ui.add_enabled_ui(can_format, |ui| {
+                if xp_button_ui(ui, "Format Drive", true).clicked() {
+                    let device = drive.device.clone();
+                    let label = self.format_label.trim().to_owned();
+                    let passphrase = self.format_passphrase.clone();
+                    self.format_passphrase.clear();
+                    self.format_passphrase2.clear();
+                    self.format_confirm.clear();
+                    self.format_error = None;
+                    self.format_running = true;
+                    self.screen = Screen::FormatProgress;
+                    run_format(device, is_disk, label, passphrase, Arc::clone(&self.format_progress));
+                }
+            });
+        });
+    }
+
+    fn ui_format_progress(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Formatting Drive…");
+        ui.separator();
+        ui.add_space(8.0);
+
+        let (step, total, step_name, log, finished, error) = {
+            let p = self.format_progress.lock().unwrap();
+            (p.step, p.total_steps, p.step_name.clone(), p.log.clone(), p.finished, p.error.clone())
+        };
+
+        if let Some(err) = &error {
+            ui.colored_label(Color32::RED, format!("Error: {err}"));
+        } else if finished {
+            ui.colored_label(Color32::from_rgb(0, 128, 0), "Formatting complete!");
+        } else {
+            ui.label(format!("Step {step} of {total}: {step_name}"));
+        }
+
+        ui.add_space(6.0);
+
+        // Step dots
+        if total > 0 {
+            ui.horizontal(|ui| {
+                for i in 1..=total {
+                    let color = if i <= step {
+                        if error.is_some() && i == step {
+                            Color32::from_rgb(200, 50, 50)
+                        } else {
+                            Color32::from_rgb(0, 150, 0)
+                        }
+                    } else {
+                        Color32::from_rgb(180, 180, 180)
+                    };
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(8), color);
+                    ui.add_space(2.0);
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        egui::ScrollArea::vertical()
+            .max_height(240.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(30, 30, 30))
+                    .corner_radius(3.0)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        for line in &log {
+                            ui.monospace(
+                                RichText::new(line)
+                                    .size(11.0)
+                                    .color(if line.starts_with(">>>") {
+                                        Color32::from_rgb(180, 220, 255)
+                                    } else {
+                                        Color32::from_rgb(200, 210, 200)
+                                    }),
+                            );
+                        }
+                    });
+            });
+
+        ui.add_space(8.0);
+
+        if finished {
+            if xp_button_ui(ui, "Back to Drive Select", false).clicked() {
+                self.screen = Screen::DriveSelect;
+                self.refresh_drives();
+            }
+        }
     }
 }
 

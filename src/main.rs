@@ -1,6 +1,7 @@
 mod backup;
 mod config;
 mod drives;
+mod format;
 mod ui;
 
 fn main() -> eframe::Result {
