@@ -285,10 +285,22 @@
                 <div class="form-grid">
                   <label>Drive label</label>
                   <input type="text" id="format-label" value="Backup" />
-                  <label>Passphrase</label>
-                  <input type="password" id="format-pass1" placeholder="Choose a passphrase" />
-                  <label>Confirm</label>
-                  <input type="password" id="format-pass2" placeholder="Repeat passphrase" />
+                  <label>Filesystem</label>
+                  <select id="format-fstype">
+                    <option value="btrfs">btrfs (recommended)</option>
+                    <option value="ext4">ext4</option>
+                  </select>
+                  <label>Encryption</label>
+                  <label class="checkbox-inline">
+                    <input type="checkbox" id="format-luks" checked />
+                    LUKS encryption
+                  </label>
+                  <div id="format-luks-section" style="display: contents">
+                    <label>Passphrase</label>
+                    <input type="password" id="format-pass1" placeholder="Choose a passphrase" />
+                    <label>Confirm</label>
+                    <input type="password" id="format-pass2" placeholder="Repeat passphrase" />
+                  </div>
                   <label id="format-confirm-label">Type device path</label>
                   <input type="text" id="format-confirm-input" placeholder="/dev/sdX" />
                 </div>

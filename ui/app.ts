@@ -737,6 +737,10 @@ async function enterFormatSetup(device: string, fstype: string | undefined, isDi
   (document.getElementById('format-confirm-input') as HTMLInputElement).placeholder = device;
 
   (document.getElementById('format-label') as HTMLInputElement).value = 'Backup';
+  (document.getElementById('format-fstype') as HTMLSelectElement).value = 'btrfs';
+  const luksEl = document.getElementById('format-luks') as HTMLInputElement;
+  luksEl.checked = true;
+  document.getElementById('format-luks-section')!.style.display = 'contents';
   (document.getElementById('format-pass1') as HTMLInputElement).value = '';
   (document.getElementById('format-pass2') as HTMLInputElement).value = '';
   (document.getElementById('format-confirm-input') as HTMLInputElement).value = '';
@@ -760,6 +764,8 @@ async function enterFormatSetup(device: string, fstype: string | undefined, isDi
 function buildFormatCmdPreview(device: string, isDisk: boolean): void {
   const label =
     (document.getElementById('format-label') as HTMLInputElement).value.trim() || '<label>';
+  const fstype = (document.getElementById('format-fstype') as HTMLSelectElement).value || 'btrfs';
+  const luks = (document.getElementById('format-luks') as HTMLInputElement).checked;
   const part = isDisk ? (device.match(/\d$/) ? device + 'p1' : device + '1') : device;
   const lines: string[] = [];
   if (isDisk) {
@@ -768,10 +774,14 @@ function buildFormatCmdPreview(device: string, isDisk: boolean): void {
   } else {
     lines.push('doas wipefs -a ' + device);
   }
-  lines.push('doas cryptsetup luksFormat --type luks2 ' + part);
-  lines.push('doas cryptsetup luksOpen ' + part + ' backer-upper-format');
-  lines.push('doas mkfs.btrfs -L ' + label + ' /dev/mapper/backer-upper-format');
-  lines.push('doas cryptsetup luksClose backer-upper-format');
+  if (luks) {
+    lines.push('doas cryptsetup luksFormat --type luks2 ' + part);
+    lines.push('doas cryptsetup luksOpen ' + part + ' backer-upper-format');
+    lines.push('doas mkfs.' + fstype + ' -L ' + label + ' /dev/mapper/backer-upper-format');
+    lines.push('doas cryptsetup luksClose backer-upper-format');
+  } else {
+    lines.push('doas mkfs.' + fstype + ' -L ' + label + ' ' + part);
+  }
   document.getElementById('format-cmd-preview')!.textContent = lines.join('\n');
 }
 
@@ -803,12 +813,13 @@ async function pollProbe(): Promise<void> {
 
 function validateFormat(): void {
   const label = (document.getElementById('format-label') as HTMLInputElement).value.trim();
+  const luks = (document.getElementById('format-luks') as HTMLInputElement).checked;
   const p1 = (document.getElementById('format-pass1') as HTMLInputElement).value;
   const p2 = (document.getElementById('format-pass2') as HTMLInputElement).value;
   const confirm = (document.getElementById('format-confirm-input') as HTMLInputElement).value.trim();
 
   let msg = '';
-  if (p2 && p1 !== p2) msg = 'Passphrases do not match.';
+  if (luks && p2 && p1 !== p2) msg = 'Passphrases do not match.';
   if (confirm && confirm !== formatDevice) msg = 'Must match exactly: ' + formatDevice;
 
   const msgEl = document.getElementById('format-validation-msg')!;
@@ -820,12 +831,15 @@ function validateFormat(): void {
     msgEl.style.display = 'none';
   }
 
-  const ok = label && p1 && p1 === p2 && confirm === formatDevice;
+  const passphraseOk = !luks || (p1 !== '' && p1 === p2);
+  const ok = label && passphraseOk && confirm === formatDevice;
   (document.getElementById('btn-do-format') as HTMLButtonElement).disabled = !ok;
 }
 
 async function doFormat(): Promise<void> {
   const label = (document.getElementById('format-label') as HTMLInputElement).value.trim();
+  const fstype = (document.getElementById('format-fstype') as HTMLSelectElement).value || 'btrfs';
+  const encrypt = (document.getElementById('format-luks') as HTMLInputElement).checked;
   const passphrase = (document.getElementById('format-pass1') as HTMLInputElement).value;
   (document.getElementById('format-pass1') as HTMLInputElement).value = '';
   (document.getElementById('format-pass2') as HTMLInputElement).value = '';
@@ -836,6 +850,8 @@ async function doFormat(): Promise<void> {
       device: formatDevice,
       isDisk: formatIsDisk,
       label,
+      fstype,
+      encrypt,
       passphrase,
     });
   } catch (e) {
@@ -1034,7 +1050,7 @@ document.getElementById('btn-format-eject')!.addEventListener('click', async (e)
   const drive = drives.find((d) => d.device === selectedDevice);
   if (!drive) { btn.disabled = false; setStatusBar(''); return; }
   try {
-    await invoke('eject');
+    await invoke('unmount_device', { device: drive.device, luksParent: drive.luks_parent ?? null });
   } catch (_) {}
   await refreshDrives();
   setStatusBar('');
@@ -1051,6 +1067,15 @@ document.getElementById('btn-format-eject')!.addEventListener('click', async (e)
   document.getElementById(id)!.addEventListener('input', validateFormat);
 });
 document.getElementById('format-label')!.addEventListener('input', () => {
+  if (formatDevice) buildFormatCmdPreview(formatDevice, formatIsDisk);
+});
+document.getElementById('format-fstype')!.addEventListener('change', () => {
+  if (formatDevice) buildFormatCmdPreview(formatDevice, formatIsDisk);
+});
+document.getElementById('format-luks')!.addEventListener('change', () => {
+  const luks = (document.getElementById('format-luks') as HTMLInputElement).checked;
+  document.getElementById('format-luks-section')!.style.display = luks ? 'contents' : 'none';
+  validateFormat();
   if (formatDevice) buildFormatCmdPreview(formatDevice, formatIsDisk);
 });
 

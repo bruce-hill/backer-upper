@@ -400,6 +400,15 @@ pub fn run_backup(
             return;
         }
 
+        if !is_btrfs(&drive_root) {
+            let elapsed = start.elapsed().as_secs_f64();
+            let mut p = progress.lock().unwrap();
+            p.finished = true;
+            p.elapsed_secs = elapsed;
+            p.current_job = total_jobs;
+            return;
+        }
+
         let snapshot_name = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let snapshots_dir = drive_root.join("snapshots");
         let _ = std::fs::create_dir_all(&snapshots_dir);
@@ -462,6 +471,15 @@ pub fn run_backup(
             }
         }
     })
+}
+
+fn is_btrfs(path: &Path) -> bool {
+    Command::new("findmnt")
+        .args(["--output=FSTYPE", "--noheadings", "--target"])
+        .arg(path)
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "btrfs")
+        .unwrap_or(false)
 }
 
 fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {

@@ -21,6 +21,7 @@ fn main() {
             commands::add_job,
             commands::delete_job,
             commands::eject,
+            commands::unmount_device,
             commands::preview_commands,
             commands::start_backup,
             commands::get_backup_progress,

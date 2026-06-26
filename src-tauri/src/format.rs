@@ -254,6 +254,8 @@ fn do_format(
     device: &str,
     is_disk: bool,
     label: &str,
+    fstype: &str,
+    encrypt: bool,
     passphrase: &str,
     progress: &SharedFormatProgress,
 ) -> Result<()> {
@@ -296,60 +298,69 @@ fn do_format(
         device.to_owned()
     };
 
-    advance(progress, "Encrypting with LUKS");
-    doas_with_passphrase(
-        &[
-            "cryptsetup",
-            "luksFormat",
-            "--type",
-            "luks2",
-            "--batch-mode",
-            "--key-file",
-            "-",
-            &partition,
-        ],
-        passphrase,
-        progress,
-    )?;
+    let mkfs_cmd = format!("mkfs.{fstype}");
+    let format_step = format!("Formatting filesystem ({fstype})");
 
-    advance(progress, "Formatting filesystem (btrfs)");
-    doas_with_passphrase(
-        &["cryptsetup", "luksOpen", "--key-file", "-", &partition, mapper],
-        passphrase,
-        progress,
-    )?;
+    if encrypt {
+        advance(progress, "Encrypting with LUKS");
+        doas_with_passphrase(
+            &[
+                "cryptsetup",
+                "luksFormat",
+                "--type",
+                "luks2",
+                "--batch-mode",
+                "--key-file",
+                "-",
+                &partition,
+            ],
+            passphrase,
+            progress,
+        )?;
 
-    let mapper_dev = format!("/dev/mapper/{mapper}");
-    if !Path::new(&mapper_dev).exists() {
-        anyhow::bail!(
-            "Mapper device {mapper_dev} did not appear after luksOpen. Cannot continue with mkfs.btrfs."
-        );
+        advance(progress, &format_step);
+        doas_with_passphrase(
+            &["cryptsetup", "luksOpen", "--key-file", "-", &partition, mapper],
+            passphrase,
+            progress,
+        )?;
+
+        let mapper_dev = format!("/dev/mapper/{mapper}");
+        if !Path::new(&mapper_dev).exists() {
+            anyhow::bail!(
+                "Mapper device {mapper_dev} did not appear after luksOpen. Cannot continue with {mkfs_cmd}."
+            );
+        }
+        log(progress, &format!("✓ {mapper_dev} is ready"));
+
+        let mkfs_result = Command::new("doas")
+            .args([mkfs_cmd.as_str(), "-L", label, &mapper_dev])
+            .stdin(Stdio::null())
+            .output();
+
+        log(progress, &format!("$ doas cryptsetup luksClose {mapper}"));
+        let close_result = Command::new("doas")
+            .args(["cryptsetup", "luksClose", mapper])
+            .stdin(Stdio::null())
+            .output();
+
+        let mkfs_out = mkfs_result.with_context(|| format!("failed to run {mkfs_cmd}"))?;
+        append_output(progress, &mkfs_out.stdout, &mkfs_out.stderr);
+        if !mkfs_out.status.success() {
+            anyhow::bail!(
+                "{mkfs_cmd} failed (exit {}): {}",
+                mkfs_out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&mkfs_out.stderr).trim()
+            );
+        }
+        if let Ok(out) = close_result {
+            append_output(progress, &out.stdout, &out.stderr);
+        }
+    } else {
+        advance(progress, &format_step);
+        doas_run(&[mkfs_cmd.as_str(), "-L", label, &partition], progress)?;
     }
-    log(progress, &format!("✓ {mapper_dev} is ready"));
 
-    let mkfs_result = Command::new("doas")
-        .args(["mkfs.btrfs", "-L", label, &mapper_dev])
-        .stdin(Stdio::null())
-        .output();
-
-    log(progress, &format!("$ doas cryptsetup luksClose {mapper}"));
-    let close_result = Command::new("doas")
-        .args(["cryptsetup", "luksClose", mapper])
-        .stdin(Stdio::null())
-        .output();
-
-    let mkfs_out = mkfs_result.context("failed to run mkfs.btrfs")?;
-    append_output(progress, &mkfs_out.stdout, &mkfs_out.stderr);
-    if !mkfs_out.status.success() {
-        anyhow::bail!(
-            "mkfs.btrfs failed (exit {}): {}",
-            mkfs_out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&mkfs_out.stderr).trim()
-        );
-    }
-    if let Ok(out) = close_result {
-        append_output(progress, &out.stdout, &out.stderr);
-    }
     Ok(())
 }
 
@@ -357,10 +368,17 @@ pub fn run_format(
     device: String,
     is_disk: bool,
     label: String,
+    fstype: String,
+    encrypt: bool,
     passphrase: String,
     progress: SharedFormatProgress,
 ) -> std::thread::JoinHandle<()> {
-    let total = if is_disk { 4 } else { 3 };
+    let total = match (is_disk, encrypt) {
+        (true, true)  => 4,
+        (true, false) => 3,
+        (false, true) => 3,
+        (false, false) => 2,
+    };
     {
         let mut p = progress.lock().unwrap();
         *p = FormatProgress {
@@ -369,7 +387,7 @@ pub fn run_format(
         };
     }
     std::thread::spawn(move || {
-        match do_format(&device, is_disk, &label, &passphrase, &progress) {
+        match do_format(&device, is_disk, &label, &fstype, encrypt, &passphrase, &progress) {
             Ok(()) => {
                 let mut p = progress.lock().unwrap();
                 p.finished = true;

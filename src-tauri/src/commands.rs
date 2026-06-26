@@ -314,6 +314,23 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     Ok(())
 }
 
+// Unmount a drive that was not mounted through the app (e.g. during format flow).
+// Does not power off — the drive may be needed for subsequent formatting.
+#[tauri::command]
+pub async fn unmount_device(device: String, luks_parent: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = if let Some(ref luks_dev) = luks_parent {
+            drives::udisksctl_unmount(&device)
+                .and_then(|()| drives::udisksctl_lock(luks_dev))
+        } else {
+            drives::udisksctl_unmount(&device)
+        };
+        result.map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn preview_commands(state: State<'_, Mutex<AppState>>) -> Vec<PreviewCommand> {
     let s = state.lock().unwrap();
@@ -486,6 +503,8 @@ pub fn start_format(
     device: String,
     is_disk: bool,
     label: String,
+    fstype: String,
+    encrypt: bool,
     passphrase: String,
 ) -> Result<(), String> {
     let progress = {
@@ -493,7 +512,7 @@ pub fn start_format(
         s.format_running = true;
         std::sync::Arc::clone(&s.format_progress)
     };
-    run_format(device, is_disk, label, passphrase, progress);
+    run_format(device, is_disk, label, fstype, encrypt, passphrase, progress);
     Ok(())
 }
 
