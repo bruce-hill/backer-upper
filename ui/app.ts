@@ -107,7 +107,6 @@ interface FormatProgress {
 
 let drives: DriveInfo[] = [];
 let selectedDevice: string | null = null;
-let currentScreen: string | null = null;
 let editingJobIdx: number | null = null;
 let backupPollId: ReturnType<typeof setInterval> | null = null;
 let formatPollId: ReturnType<typeof setInterval> | null = null;
@@ -120,7 +119,6 @@ let formatIsDisk = false;
 function showScreen(name: string): void {
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
   document.getElementById('screen-' + name)!.classList.add('active');
-  currentScreen = name;
 }
 
 function setStatusBar(msg: string): void {
@@ -147,9 +145,9 @@ function renderDriveList(): void {
     el.innerHTML = drives
       .map((d, i) => {
         const badges: string[] = [];
-        if (d.tran) badges.push(`<span class="badge badge-usb">${d.tran.toUpperCase()}</span>`);
+        if (d.tran) badges.push(`<span class="badge badge-usb">${escHtml(d.tran.toUpperCase())}</span>`);
         if (d.fstype && d.fstype !== 'crypto_LUKS')
-          badges.push(`<span class="badge badge-fs">${d.fstype}</span>`);
+          badges.push(`<span class="badge badge-fs">${escHtml(d.fstype)}</span>`);
         if (d.is_encrypted) badges.push('<span class="badge badge-luks">LUKS</span>');
         if (d.is_mounted) badges.push('<span class="badge badge-mounted">mounted</span>');
         const selected = d.device === selectedDevice ? ' selected' : '';
@@ -295,7 +293,7 @@ async function refreshConfigView(): Promise<void> {
 async function addJob(): Promise<void> {
   try {
     const config = await invoke<BackupConfig>('add_job');
-    editJob(config.jobs.length - 1);
+    await editJob(config.jobs.length - 1);
   } catch (e) {
     setError('config-error', String(e));
   }
@@ -361,7 +359,8 @@ async function deleteJob(): Promise<void> {
   try {
     await invoke<BackupConfig>('delete_job', { idx: editingJobIdx });
     const status = await invoke<AppStatus>('get_status');
-    enterConfig(status.mount_point!, status.config!);
+    if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
+    enterConfig(status.mount_point, status.config);
   } catch (e) {
     alert('Delete failed: ' + e);
   }
@@ -438,6 +437,7 @@ function resetBackupUI(): void {
   setProgressBar(0, false, false);
   document.getElementById('backup-elapsed')!.textContent = '';
   document.getElementById('backup-log')!.innerHTML = '';
+  _paused = false;
   const btnRow = document.getElementById('backup-btn-row')!;
   btnRow.innerHTML = `
     <button id="btn-backup-pause" onclick="togglePause()">Pause</button>
@@ -470,7 +470,7 @@ function startBackupPoll(): void {
 async function pollBackup(): Promise<void> {
   const p = await invoke<BackupProgress>('get_backup_progress');
   updateBackupUI(p);
-  if (!p.running && (p.finished || p.error)) {
+  if (!p.running && (p.finished || p.cancelled || p.error)) {
     clearInterval(backupPollId!);
     backupPollId = null;
   }
@@ -520,7 +520,7 @@ function updateBackupUI(p: BackupProgress): void {
   if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
 
   // Swap buttons when done
-  if (!p.running && (p.finished || p.error)) {
+  if (!p.running && (p.finished || p.cancelled || p.error)) {
     const btnRow = document.getElementById('backup-btn-row')!;
     btnRow.innerHTML = `
       <button onclick="showConfigFromBackup()">← Back to Config</button>
@@ -532,14 +532,15 @@ function setProgressBar(fraction: number, error: boolean, done: boolean): void {
   const bar = document.getElementById('backup-progress-bar')!;
   const label = document.getElementById('backup-progress-label')!;
   const pct = Math.round(fraction * 100);
-  (bar as HTMLElement).style.width = pct + '%';
+  bar.style.width = pct + '%';
   label.textContent = pct + '%';
   bar.className = 'progress-bar' + (error ? ' error' : done ? ' done' : '');
 }
 
 async function showConfigFromBackup(): Promise<void> {
   const status = await invoke<AppStatus>('get_status');
-  enterConfig(status.mount_point!, status.config!);
+  if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
+  enterConfig(status.mount_point, status.config);
 }
 
 async function ejectFromBackup(): Promise<void> {
