@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::State;
 
-use crate::backup::{format_duration, list_snapshot_names, rsync_command_string, run_backup, run_restore, BackupProgress};
+use crate::backup::{format_duration, list_snapshot_names, rsync_command_string, rsync_restore_args, run_backup, run_restore, BackupProgress};
 use crate::config::{Config, SyncJob};
 use crate::drives::{self, Drive};
 use crate::format::{probe_drive, run_format, DriveInfo, FormatProgress};
@@ -532,6 +532,74 @@ pub async fn list_snapshots(state: State<'_, Mutex<AppState>>) -> Result<Vec<Str
             .map_err(|e| e.to_string()),
         None => Ok(vec![]),
     }
+}
+
+#[tauri::command]
+pub async fn preview_restore(
+    state: State<'_, Mutex<AppState>>,
+    snapshot: Option<String>,
+    job_indices: Vec<usize>,
+    delete_extra: bool,
+) -> Result<Vec<String>, String> {
+    let (cfg, mp) = {
+        let s = state.lock().unwrap();
+        if s.backup_running {
+            return Err("A backup or restore is already in progress".to_owned());
+        }
+        match (s.config.clone(), s.mount_point.clone()) {
+            (Some(c), Some(m)) => (c, m),
+            _ => return Err("No config or mount point".to_owned()),
+        }
+    };
+
+    if let Some(ref snap) = snapshot {
+        if snap.contains('/') {
+            return Err("Invalid snapshot name".to_owned());
+        }
+        if !list_snapshot_names(&mp).contains(snap) {
+            return Err(format!("Snapshot not found: {snap}"));
+        }
+    }
+
+    let jobs: Vec<SyncJob> = job_indices
+        .iter()
+        .filter_map(|&i| cfg.jobs.get(i))
+        .cloned()
+        .collect();
+
+    if jobs.is_empty() {
+        return Err("No jobs selected".to_owned());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut all_lines = Vec::new();
+        for job in &jobs {
+            let mut args = rsync_restore_args(job, &mp, snapshot.as_deref(), delete_extra);
+            args.push("--dry-run".to_owned());
+            args.push("--stats".to_owned());
+            all_lines.push(format!(">>> [{}] dry-run", job.name));
+            let output = std::process::Command::new("rsync")
+                .args(&args)
+                .output()
+                .map_err(|e| e.to_string())?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            all_lines.extend(stdout.lines().map(str::to_owned));
+            if !output.status.success() {
+                let code = output.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                if !stderr.is_empty() {
+                    all_lines.push(format!("(stderr: {stderr})"));
+                }
+                if code != 0 && code != 24 {
+                    all_lines.push(format!("(rsync exited {code})"));
+                }
+            }
+        }
+        Ok(all_lines)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

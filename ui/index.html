@@ -219,7 +219,27 @@
 
         <div class="btn-row">
           <button id="btn-restore-cancel">Cancel</button>
-          <button id="btn-do-restore" class="danger" disabled>Restore from Backup</button>
+          <button id="btn-do-restore" class="primary" disabled>Preview Restore →</button>
+        </div>
+      </div>
+
+      <!-- RestorePreview -->
+      <div id="screen-restore-preview" class="screen">
+        <div class="screen-header">
+          <h2>Preview Restore</h2>
+        </div>
+        <p class="muted">These files would be changed. No files have been written yet.</p>
+        <div class="log-section">
+          <div class="log-label">Dry-run output</div>
+          <div id="restore-preview-log" class="log-box"></div>
+        </div>
+        <div id="restore-preview-empty" class="empty-state" style="display: none">
+          No files would be changed by this restore.
+        </div>
+        <div id="restore-preview-error" class="error-text" style="display: none"></div>
+        <div class="btn-row">
+          <button id="btn-restore-preview-back">← Back</button>
+          <button id="btn-restore-preview-proceed" class="danger">Restore from Backup</button>
         </div>
       </div>
 

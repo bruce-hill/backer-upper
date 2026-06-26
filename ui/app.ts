@@ -114,6 +114,9 @@ let probePollId: ReturnType<typeof setInterval> | null = null;
 let formatDevice: string | null = null;
 let formatIsDisk = false;
 let operationIsRestore = false;
+let pendingRestoreSnapshot: string | null = null;
+let pendingRestoreJobIndices: number[] = [];
+let pendingRestoreDeleteExtra = false;
 
 // ── Screen routing ────────────────────────────────────────────────────────────
 
@@ -632,26 +635,67 @@ function validateRestore(): void {
   );
 }
 
-async function doRestore(): Promise<void> {
+async function goToRestorePreview(): Promise<void> {
   const snapshotInput = document.querySelector<HTMLInputElement>(
     'input[name="restore-snapshot"]:checked'
   );
   const snapshotVal = snapshotInput?.value ?? '';
-  const snapshot = snapshotVal === '' ? null : snapshotVal;
-
-  const jobIndices = Array.from(
+  pendingRestoreSnapshot = snapshotVal === '' ? null : snapshotVal;
+  pendingRestoreJobIndices = Array.from(
     document.querySelectorAll<HTMLInputElement>('.restore-job-check')
   )
     .filter((cb) => cb.checked)
     .map((cb) => parseInt(cb.dataset.idx!, 10));
+  pendingRestoreDeleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement).checked;
 
-  const deleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement).checked;
-
+  const btn = document.getElementById('btn-do-restore') as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Running preview…';
   setError('restore-error', '');
+
   try {
-    await invoke('start_restore', { snapshot, jobIndices, deleteExtra });
+    const lines = await invoke<string[]>('preview_restore', {
+      snapshot: pendingRestoreSnapshot,
+      jobIndices: pendingRestoreJobIndices,
+      deleteExtra: pendingRestoreDeleteExtra,
+    });
+
+    const logEl = document.getElementById('restore-preview-log')!;
+    const emptyEl = document.getElementById('restore-preview-empty')!;
+    setError('restore-preview-error', '');
+
+    const hasContent = lines.some((l) => l.trim());
+    if (hasContent) {
+      logEl.style.display = '';
+      emptyEl.style.display = 'none';
+      logEl.innerHTML = lines
+        .map((l) => `<div class="${l.startsWith('>>>') ? 'log-cmd' : ''}">${escHtml(l)}</div>`)
+        .join('');
+      logEl.scrollTop = 0;
+    } else {
+      logEl.style.display = 'none';
+      emptyEl.style.display = '';
+    }
+
+    showScreen('restore-preview');
   } catch (e) {
     setError('restore-error', String(e));
+  } finally {
+    btn.textContent = 'Preview Restore →';
+    validateRestore();
+  }
+}
+
+async function doRestore(): Promise<void> {
+  setError('restore-preview-error', '');
+  try {
+    await invoke('start_restore', {
+      snapshot: pendingRestoreSnapshot,
+      jobIndices: pendingRestoreJobIndices,
+      deleteExtra: pendingRestoreDeleteExtra,
+    });
+  } catch (e) {
+    setError('restore-preview-error', String(e));
     return;
   }
 
@@ -912,7 +956,10 @@ document.getElementById('btn-restore-cancel')!.addEventListener('click', async (
   enterConfig(status.mount_point!, status.config!);
 });
 document.getElementById('screen-restore')!.addEventListener('input', validateRestore);
-document.getElementById('btn-do-restore')!.addEventListener('click', doRestore);
+document.getElementById('btn-do-restore')!.addEventListener('click', goToRestorePreview);
+
+document.getElementById('btn-restore-preview-back')!.addEventListener('click', () => showScreen('restore'));
+document.getElementById('btn-restore-preview-proceed')!.addEventListener('click', doRestore);
 
 document.getElementById('btn-preview-cancel')!.addEventListener('click', async () => {
   const status = await invoke<AppStatus>('get_status');
