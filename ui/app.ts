@@ -575,9 +575,13 @@ async function goToRestore(): Promise<void> {
   const jobs = status.config?.jobs || [];
 
   const snapshotEl = document.getElementById('restore-snapshot-list')!;
+  const lastBackup = status.config?.last_backup;
+  const currentLabel = lastBackup
+    ? `<strong>Current backup</strong> <span class="radio-desc">${escHtml(relativeTime(new Date(lastBackup)))} · most recent rsync run</span>`
+    : '<strong>Current backup</strong> <span class="radio-desc">most recent rsync run</span>';
   const snapshotOptions = [
-    { value: '', label: '<strong>Current backup</strong> — most recent rsync run' },
-    ...snapshots.slice().reverse().map((s) => ({ value: s, label: escHtml(s) })),
+    { value: '', label: currentLabel },
+    ...snapshots.slice().reverse().map((s) => ({ value: s, label: snapshotLabel(s) })),
   ];
   snapshotEl.innerHTML = snapshotOptions
     .map(
@@ -904,6 +908,43 @@ function updateFormatUI(p: FormatProgress): void {
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────
+
+function parseSnapshotDate(name: string): Date | null {
+  const m = name.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+}
+
+function formatSnapshotDate(date: Date): string {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const mon = months[date.getMonth()];
+  const day = date.getDate();
+  const hh = date.getHours().toString().padStart(2, '0');
+  const mm = date.getMinutes().toString().padStart(2, '0');
+  const yearSuffix = date.getFullYear() !== new Date().getFullYear()
+    ? ` ${date.getFullYear()}` : '';
+  return `${mon} ${day}${yearSuffix} at ${hh}:${mm}`;
+}
+
+function relativeTime(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  const months = Math.floor(days / 30);
+  if (months > 0) return `${months} month${months === 1 ? '' : 's'} ago`;
+  if (days > 0)   return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (hours > 0)  return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (mins > 0)   return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  return 'just now';
+}
+
+function snapshotLabel(name: string): string {
+  const date = parseSnapshotDate(name);
+  if (!date) return escHtml(name);
+  return `<strong>${escHtml(formatSnapshotDate(date))}</strong>`
+    + ` <span class="radio-desc">${escHtml(relativeTime(date))} · ${escHtml(name)}</span>`;
+}
 
 function escHtml(s: unknown): string {
   return String(s ?? '')
