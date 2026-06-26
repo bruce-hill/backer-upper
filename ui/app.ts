@@ -575,23 +575,17 @@ async function goToRestore(): Promise<void> {
   const jobs = status.config?.jobs || [];
 
   const snapshotEl = document.getElementById('restore-snapshot-list')!;
-  const lastBackup = status.config?.last_backup;
-  const currentLabel = lastBackup
-    ? `<strong>Current backup</strong> <span class="radio-desc">${escHtml(relativeTime(new Date(lastBackup)))} · most recent rsync run</span>`
-    : '<strong>Current backup</strong> <span class="radio-desc">most recent rsync run</span>';
-  const snapshotOptions = [
-    { value: '', label: currentLabel },
-    ...snapshots.slice().reverse().map((s) => ({ value: s, label: snapshotLabel(s) })),
-  ];
-  snapshotEl.innerHTML = snapshotOptions
-    .map(
-      (opt, i) => `
-    <label class="radio-option">
-      <input type="radio" name="restore-snapshot" value="${escHtml(opt.value)}" ${i === 0 ? 'checked' : ''} />
-      <span>${opt.label}</span>
-    </label>`
-    )
-    .join('');
+  if (snapshots.length === 0) {
+    snapshotEl.innerHTML = '<p class="muted">No snapshots available yet — complete a backup first to create one.</p>';
+  } else {
+    snapshotEl.innerHTML = snapshots.slice().reverse()
+      .map((s, i) => `
+      <label class="radio-option">
+        <input type="radio" name="restore-snapshot" value="${escHtml(s)}" ${i === 0 ? 'checked' : ''} />
+        <span>${snapshotLabel(s)}</span>
+      </label>`)
+      .join('');
+  }
 
   const jobsEl = document.getElementById('restore-jobs-list')!;
   if (jobs.length === 0) {
@@ -629,6 +623,7 @@ async function goToRestore(): Promise<void> {
 
 function validateRestore(): void {
   const confirm = (document.getElementById('restore-confirm-input') as HTMLInputElement).value;
+  const hasSnapshot = document.querySelector<HTMLInputElement>('input[name="restore-snapshot"]:checked') !== null;
   const hasJobs = Array.from(
     document.querySelectorAll<HTMLInputElement>('.restore-job-check')
   ).some((cb) => cb.checked);
@@ -643,7 +638,7 @@ function validateRestore(): void {
   }
 
   (document.getElementById('btn-do-restore') as HTMLButtonElement).disabled = !(
-    confirm === 'RESTORE' && hasJobs
+    confirm === 'RESTORE' && hasSnapshot && hasJobs
   );
 }
 
@@ -651,8 +646,7 @@ async function goToRestorePreview(): Promise<void> {
   const snapshotInput = document.querySelector<HTMLInputElement>(
     'input[name="restore-snapshot"]:checked'
   );
-  const snapshotVal = snapshotInput?.value ?? '';
-  pendingRestoreSnapshot = snapshotVal === '' ? null : snapshotVal;
+  pendingRestoreSnapshot = snapshotInput?.value || null;
   pendingRestoreJobIndices = Array.from(
     document.querySelectorAll<HTMLInputElement>('.restore-job-check')
   )
