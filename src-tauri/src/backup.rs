@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -5,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, SyncJob, SyncMode};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct BackupProgress {
     pub current_job: usize,
     pub total_jobs: usize,
@@ -30,8 +31,7 @@ impl BackupProgress {
         if self.bytes_total == 0 {
             0.0
         } else {
-            (self.bytes_transferred as f32 / self.bytes_total as f32)
-                .clamp(0.0, 1.0)
+            (self.bytes_transferred as f32 / self.bytes_total as f32).clamp(0.0, 1.0)
         }
     }
 
@@ -54,7 +54,7 @@ impl BackupProgress {
     }
 }
 
-fn format_duration(secs: u64) -> String {
+pub fn format_duration(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -66,7 +66,6 @@ fn format_duration(secs: u64) -> String {
 
 pub type SharedProgress = Arc<Mutex<BackupProgress>>;
 
-/// Build the rsync argument list for one job (without actually running it).
 pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-av".to_owned(),
@@ -74,22 +73,18 @@ pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
         "--no-inc-recursive".to_owned(),
         "--partial-dir=.rsync-partial".to_owned(),
     ];
-
     if job.mode == SyncMode::Backup {
         args.push("--delete".to_owned());
     }
-
     for excl in &job.excludes {
         args.push(format!("--exclude={excl}"));
     }
-
     let dest = drive_root.join(&job.destination);
     args.push(format!("{}/", job.source.display()));
     args.push(format!("{}/", dest.display()));
     args
 }
 
-/// Format the rsync command for a job as a shell-displayable string.
 pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
     let args = rsync_args(job, drive_root);
     let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
@@ -97,7 +92,10 @@ pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
 }
 
 fn shell_quote(s: &str) -> String {
-    if s.contains(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '(' | ')' | '&' | '|' | ';' | '<' | '>' | '!' | '#' | '~' | '*' | '?')) {
+    if s.contains(|c: char| {
+        c.is_whitespace()
+            || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '(' | ')' | '&' | '|' | ';' | '<' | '>' | '!' | '#' | '~' | '*' | '?')
+    }) {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
         s.to_owned()
@@ -109,12 +107,7 @@ pub fn run_backup(
     drive_root: &Path,
     progress: SharedProgress,
 ) -> std::thread::JoinHandle<()> {
-    let jobs: Vec<SyncJob> = config
-        .jobs
-        .iter()
-        .filter(|j| j.enabled)
-        .cloned()
-        .collect();
+    let jobs: Vec<SyncJob> = config.jobs.iter().filter(|j| j.enabled).cloned().collect();
     let drive_root = drive_root.to_path_buf();
     let total_jobs = jobs.len();
 
@@ -133,11 +126,9 @@ pub fn run_backup(
         let start = std::time::Instant::now();
 
         for (idx, job) in jobs.iter().enumerate() {
-            // Check for cancellation between jobs
             if progress.lock().unwrap().cancelled {
                 break;
             }
-
             {
                 let mut p = progress.lock().unwrap();
                 p.current_job = idx;
@@ -157,7 +148,6 @@ pub fn run_backup(
             }
 
             let args = rsync_args(job, &drive_root);
-
             let mut child = match Command::new("rsync")
                 .args(&args)
                 .stdout(Stdio::piped())
@@ -172,7 +162,6 @@ pub fn run_backup(
                 }
             };
 
-            // Publish PID so the UI can send SIGSTOP/SIGCONT/SIGTERM
             progress.lock().unwrap().child_pid = Some(child.id());
 
             if let Some(stdout) = child.stdout.take() {
@@ -180,16 +169,14 @@ pub fn run_backup(
                 for line in reader.lines() {
                     let Ok(line) = line else { continue };
                     let elapsed = start.elapsed().as_secs_f64();
-                    // rsync uses \r to overwrite progress on the same terminal line;
-                    // split on \r and parse each segment so the last one wins.
                     for seg in line.split('\r') {
                         let seg = seg.trim();
                         if !seg.is_empty() {
                             parse_rsync_line(seg, &progress, elapsed);
                         }
                     }
-                    // For the log, keep only the last \r segment (the final state of that line).
-                    let display = line.split('\r')
+                    let display = line
+                        .split('\r')
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .last()
@@ -207,24 +194,25 @@ pub fn run_backup(
             }
 
             progress.lock().unwrap().child_pid = None;
-
             let cancelled = progress.lock().unwrap().cancelled;
 
             let status = match child.wait() {
                 Ok(s) => s,
                 Err(e) => {
-                    if cancelled { break; }
+                    if cancelled {
+                        break;
+                    }
                     let mut p = progress.lock().unwrap();
                     p.error = Some(format!("rsync wait error: {e}"));
                     return;
                 }
             };
 
-            if cancelled { break; }
-
+            if cancelled {
+                break;
+            }
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
-                // rsync exit code 24 = some files vanished — treat as warning
                 if code != 24 {
                     let mut p = progress.lock().unwrap();
                     p.error = Some(format!(
@@ -236,14 +224,10 @@ pub fn run_backup(
             }
         }
 
-        // Create btrfs snapshot
         let snapshot_name = chrono::Local::now().format("%Y-%m-%d").to_string();
         let snapshots_dir = drive_root.join("snapshots");
         let _ = std::fs::create_dir_all(&snapshots_dir);
 
-        // TODO: support sudo fallback and/or password prompt for machines without doas
-        // Use "." as source with current_dir so btrfs finds the subvolume the same
-        // way as running `btrfs subvolume snapshot -r . ./snapshots/DATE` manually.
         let snap_output = Command::new("doas")
             .args([
                 "btrfs",
@@ -277,7 +261,6 @@ pub fn run_backup(
                 } else {
                     p.log_lines.push(format!("Warning: btrfs snapshot failed: {stderr}"));
                 }
-                // Diagnostic: mount options for the drive
                 if let Ok(mnt) = Command::new("findmnt")
                     .args(["--output=TARGET,OPTIONS", "--target", drive_root.to_str().unwrap_or(".")])
                     .output()
@@ -288,7 +271,6 @@ pub fn run_backup(
                         p.log_lines.push(format!("  mount: {out}"));
                     }
                 }
-                // Diagnostic: is drive_root a btrfs subvolume, and is it read-only?
                 if let Ok(sv) = Command::new("doas")
                     .args(["btrfs", "subvolume", "show", drive_root.to_str().unwrap_or(".")])
                     .output()
@@ -307,11 +289,8 @@ pub fn run_backup(
 }
 
 fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
-    // progress2 format:  "    123,456,789  45%   12.34MB/s    0:01:23 (xfr#42, to-chk=100/200)"
     let trimmed = line.trim();
 
-    // Detect xfr lines
-    // Format: "  2,048,576,000  45%  12.34MB/s  0:01:23 (xfr#42, to-chk=100/200)"
     if trimmed.contains("to-chk=") || trimmed.contains("xfr#") {
         if let Some(pct_pos) = trimmed.find('%') {
             let before_pct: &str = &trimmed[..pct_pos];
@@ -319,14 +298,14 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
             if parts.len() >= 2 {
                 let bytes_str = parts[parts.len() - 2].replace(',', "");
                 let pct_str = parts[parts.len() - 1];
-                if let (Ok(bytes), Ok(pct)) = (bytes_str.parse::<u64>(), pct_str.parse::<f64>()) {
+                if let (Ok(bytes), Ok(pct)) =
+                    (bytes_str.parse::<u64>(), pct_str.parse::<f64>())
+                {
                     let mut p = progress.lock().unwrap();
                     p.bytes_transferred = bytes;
-                    // Derive total from the percentage rsync already computed
                     if pct > 0.0 {
                         p.bytes_total = (bytes as f64 * 100.0 / pct) as u64;
                     }
-                    // Estimate total time
                     if pct > 1.0 {
                         let estimated = elapsed / (pct / 100.0);
                         p.estimated_total_secs = Some(estimated);
@@ -334,8 +313,6 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
                 }
             }
         }
-
-        // Parse to-chk=done/total
         if let Some(pos) = trimmed.find("to-chk=") {
             let rest = &trimmed[pos + 7..];
             let nums: Vec<&str> = rest.split('/').collect();
@@ -356,12 +333,10 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
         return;
     }
 
-    // ir-chk= lines are the incremental scan phase — no useful byte totals yet, skip.
     if trimmed.contains("ir-chk=") {
         return;
     }
 
-    // Detect "current file" lines (plain paths)
     if !trimmed.is_empty()
         && !trimmed.starts_with("sending")
         && !trimmed.starts_with("receiving")

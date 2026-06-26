@@ -1,26 +1,25 @@
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Drive {
     pub device: String,
     pub label: Option<String>,
-    #[allow(dead_code)]
     pub uuid: Option<String>,
     pub fstype: Option<String>,
     pub size: Option<String>,
     pub mountpoint: Option<String>,
     pub is_encrypted: bool,
-    /// For an already-unlocked LUKS crypt device, the /dev/... path of the LUKS container.
     pub luks_parent: Option<String>,
     pub model: Option<String>,
     pub vendor: Option<String>,
     pub tran: Option<String>,
-    pub dev_type: String, // "disk", "part", "crypt", etc.
+    pub dev_type: String,
 }
 
 impl Drive {
@@ -63,7 +62,8 @@ struct DiskMeta {
 pub fn list_removable_drives() -> Result<Vec<Drive>> {
     let output = Command::new("lsblk")
         .args([
-            "-J", "-o",
+            "-J",
+            "-o",
             "NAME,PATH,LABEL,UUID,FSTYPE,SIZE,MOUNTPOINT,HOTPLUG,TYPE,VENDOR,MODEL,TRAN",
         ])
         .output()
@@ -86,8 +86,7 @@ fn str_field(dev: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 fn is_hotplug(dev: &serde_json::Value) -> bool {
-    dev["hotplug"].as_bool().unwrap_or(false)
-        || dev["hotplug"].as_str() == Some("1")
+    dev["hotplug"].as_bool().unwrap_or(false) || dev["hotplug"].as_str() == Some("1")
 }
 
 fn collect_drives(
@@ -111,7 +110,6 @@ fn collect_drives(
     };
 
     let dev_path = dev["path"].as_str().unwrap_or_default();
-
     let children = dev["children"].as_array();
     let has_children = children.map(|c| !c.is_empty()).unwrap_or(false);
 
@@ -121,20 +119,25 @@ fn collect_drives(
         }
     }
 
-    if !hotplug { return; }
-    if dev_type == "disk" && has_children { return; }
-    if dev_type == "crypt" && !parent_hotplug { return; }
-    // A LUKS partition that has already been unlocked has a crypt child.
-    // Skip the partition — the crypt child is already in `out` and is what the user wants.
-    if dev_type == "part" && children.map_or(false, |kids| {
-        kids.iter().any(|k| k["type"].as_str() == Some("crypt"))
-    }) {
+    if !hotplug {
+        return;
+    }
+    if dev_type == "disk" && has_children {
+        return;
+    }
+    if dev_type == "crypt" && !parent_hotplug {
+        return;
+    }
+    if dev_type == "part"
+        && children.map_or(false, |kids| {
+            kids.iter().any(|k| k["type"].as_str() == Some("crypt"))
+        })
+    {
         return;
     }
 
     let fstype = str_field(dev, "fstype");
     let is_encrypted = fstype.as_deref() == Some("crypto_LUKS") || dev_type == "crypt";
-    // For an already-unlocked crypt device, record the LUKS container so eject can lock it.
     let luks_parent = if dev_type == "crypt" {
         parent_device.map(str::to_owned)
     } else {
@@ -142,7 +145,9 @@ fn collect_drives(
     };
 
     let device = dev_path.to_owned();
-    if device.is_empty() { return; }
+    if device.is_empty() {
+        return;
+    }
 
     out.push(Drive {
         device,
@@ -160,11 +165,6 @@ fn collect_drives(
     });
 }
 
-// ── udisks2 D-Bus mount/unlock (no root, no console prompts) ────────────────
-
-/// Convert a /dev/XYZ path to the udisks2 D-Bus object path.
-/// udisks2 encodes the name by replacing non-[A-Za-z0-9_] chars with '_'.
-/// Resolves symlinks first so /dev/mapper/luks-* → /dev/dm-N → correct object path.
 pub fn udisks2_obj_path(device: &str) -> String {
     let resolved = std::fs::canonicalize(device)
         .ok()
@@ -191,13 +191,10 @@ fn udisks2_proxy<'a>(
         .with_context(|| format!("failed to create udisks2 proxy for {obj_path}"))
 }
 
-/// Mount a plain (non-encrypted) removable device via udisks2.
-/// Returns the mount point udisks2 chose.
 pub fn mount_device(device: &str) -> Result<PathBuf> {
     let obj = udisks2_obj_path(device);
     let conn = udisks2_conn()?;
     let proxy = udisks2_proxy(&conn, &obj, "org.freedesktop.UDisks2.Filesystem")?;
-
     let opts: HashMap<String, OwnedValue> = HashMap::new();
     let mount_path: String = proxy
         .call("Mount", &(opts,))
@@ -205,9 +202,6 @@ pub fn mount_device(device: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(mount_path))
 }
 
-
-/// Unmount a block device by path using udisksctl (handles both udisks2-managed and
-/// externally-mounted drives, e.g. those mounted by GVfs before the app started).
 pub fn udisksctl_unmount(device: &str) -> Result<()> {
     let out = Command::new("udisksctl")
         .args(["unmount", "--no-user-interaction", "-b", device])
@@ -220,7 +214,6 @@ pub fn udisksctl_unmount(device: &str) -> Result<()> {
     Ok(())
 }
 
-/// Lock a LUKS device using udisksctl.
 pub fn udisksctl_lock(device: &str) -> Result<()> {
     let out = Command::new("udisksctl")
         .args(["lock", "--no-user-interaction", "-b", device])
@@ -233,7 +226,6 @@ pub fn udisksctl_lock(device: &str) -> Result<()> {
     Ok(())
 }
 
-/// Power off a drive using udisksctl.
 pub fn udisksctl_power_off(device: &str) -> Result<()> {
     let out = Command::new("udisksctl")
         .args(["power-off", "--no-user-interaction", "-b", device])
@@ -246,15 +238,10 @@ pub fn udisksctl_power_off(device: &str) -> Result<()> {
     Ok(())
 }
 
-
-/// Unlock a LUKS device with the supplied passphrase (passed directly via D-Bus,
-/// no terminal interaction) and mount the cleartext device.
-/// Returns (cleartext_block_device_path, mount_point).
 pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathBuf)> {
     let obj = udisks2_obj_path(device);
     let conn = udisks2_conn()?;
 
-    // Call Encrypted.Unlock(passphrase, options) → cleartext object path
     let enc = udisks2_proxy(&conn, &obj, "org.freedesktop.UDisks2.Encrypted")?;
     let opts: HashMap<String, OwnedValue> = HashMap::new();
     let cleartext: OwnedObjectPath = enc
@@ -271,7 +258,6 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
             }
         })?;
 
-    // Read the cleartext block device path (e.g. /dev/dm-0) for udisksctl eject later
     let block = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Block")?;
     let dev_bytes: Vec<u8> = block
         .get_property("PreferredDevice")
@@ -281,7 +267,6 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
         .trim_end_matches('\0')
         .to_owned();
 
-    // Call Filesystem.Mount(options) on the cleartext device → mount path
     let fs = udisks2_proxy(&conn, cleartext.as_str(), "org.freedesktop.UDisks2.Filesystem")?;
     let mount_opts: HashMap<String, OwnedValue> = HashMap::new();
     let mount_path: String = fs
@@ -291,8 +276,6 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
     Ok((cleartext_dev, PathBuf::from(mount_path)))
 }
 
-/// Given a whole-disk device path, return the first partition's path.
-/// e.g. /dev/sda → /dev/sda1, /dev/nvme0n1 → /dev/nvme0n1p1
 pub fn partition_path(disk: &str) -> String {
     if disk.chars().last().map_or(false, |c| c.is_ascii_digit()) {
         format!("{disk}p1")

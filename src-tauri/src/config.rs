@@ -6,33 +6,16 @@ pub const CONFIG_FILENAME: &str = "backer-upper.toml";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SyncMode {
-    /// Delete files from backup that were deleted locally.
     Backup,
-    /// Keep all files even if deleted locally.
     Media,
 }
 
-impl SyncMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            SyncMode::Backup => "Backup",
-            SyncMode::Media => "Media",
-        }
-    }
-
-    pub fn description(&self) -> &'static str {
-        match self {
-            SyncMode::Backup => "Mirror: deletes in backup when deleted locally",
-            SyncMode::Media => "Archive: keeps all files even if deleted locally",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncJob {
     pub name: String,
     pub source: PathBuf,
-    pub destination: PathBuf, // relative to drive root
+    pub destination: PathBuf,
     pub excludes: Vec<String>,
     pub mode: SyncMode,
     pub enabled: bool,
@@ -43,9 +26,8 @@ impl SyncJob {
         let source: PathBuf = source.into();
         let dest_name = source
             .file_name()
-            .map(|n| PathBuf::from(n))
+            .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("backup"));
-
         SyncJob {
             name: name.into(),
             source,
@@ -66,9 +48,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            jobs: vec![
-                SyncJob::new("Home", dirs_home()),
-            ],
+            jobs: vec![SyncJob::new("Home", dirs_home())],
             last_backup: None,
         }
     }
@@ -86,8 +66,8 @@ impl Config {
         if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let cfg: Config = toml::from_str(&text)
-                .with_context(|| format!("parsing {}", path.display()))?;
+            let cfg: Config =
+                toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
             Ok(cfg)
         } else {
             let cfg = Config::default();
@@ -103,5 +83,4 @@ impl Config {
             .with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
-
 }
