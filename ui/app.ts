@@ -116,6 +116,7 @@ let formatIsDisk = false;
 let operationIsRestore = false;
 let pendingRestoreSnapshot: string | null = null;
 let pendingRestoreJobIndices: number[] = [];
+let pendingRestoreSubpaths: string[] = [];
 let pendingRestoreDeleteExtra = false;
 
 // ── Screen routing ────────────────────────────────────────────────────────────
@@ -595,13 +596,20 @@ async function goToRestore(): Promise<void> {
     jobsEl.innerHTML = jobs
       .map(
         (j, i) => `
-      <label class="radio-option">
-        <input type="checkbox" class="restore-job-check" data-idx="${i}" checked />
-        <span>
-          <strong>${escHtml(j.name)}</strong>
-          <span class="radio-desc">${escHtml(String(j.destination))} → ${escHtml(j.source)}</span>
-        </span>
-      </label>`
+      <div class="restore-job-entry">
+        <label class="radio-option">
+          <input type="checkbox" class="restore-job-check" data-idx="${i}" checked />
+          <span>
+            <strong>${escHtml(j.name)}</strong>
+            <span class="radio-desc">${escHtml(String(j.destination))} → ${escHtml(j.source)}</span>
+          </span>
+        </label>
+        <div class="restore-subpath-row">
+          <span class="subpath-label">Subpath:</span>
+          <input type="text" class="restore-job-subpath-input" data-idx="${i}"
+                 placeholder="(entire job)" />
+        </div>
+      </div>`
       )
       .join('');
   }
@@ -646,6 +654,10 @@ async function goToRestorePreview(): Promise<void> {
   )
     .filter((cb) => cb.checked)
     .map((cb) => parseInt(cb.dataset.idx!, 10));
+  pendingRestoreSubpaths = pendingRestoreJobIndices.map((idx) => {
+    const input = document.querySelector<HTMLInputElement>(`.restore-job-subpath-input[data-idx="${idx}"]`);
+    return input?.value.trim() ?? '';
+  });
   pendingRestoreDeleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement).checked;
 
   const btn = document.getElementById('btn-do-restore') as HTMLButtonElement;
@@ -657,6 +669,7 @@ async function goToRestorePreview(): Promise<void> {
     const lines = await invoke<string[]>('preview_restore', {
       snapshot: pendingRestoreSnapshot,
       jobIndices: pendingRestoreJobIndices,
+      subpaths: pendingRestoreSubpaths,
       deleteExtra: pendingRestoreDeleteExtra,
     });
 
@@ -692,6 +705,7 @@ async function doRestore(): Promise<void> {
     await invoke('start_restore', {
       snapshot: pendingRestoreSnapshot,
       jobIndices: pendingRestoreJobIndices,
+      subpaths: pendingRestoreSubpaths,
       deleteExtra: pendingRestoreDeleteExtra,
     });
   } catch (e) {

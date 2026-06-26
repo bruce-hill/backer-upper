@@ -778,3 +778,26 @@ details[open] summary {
 .meta-row .muted {
   font-size: 14px;
 }
+
+/* Restore: subpath input indented under each job checkbox */
+.restore-job-entry {
+  margin-bottom: 6px;
+}
+.restore-subpath-row {
+  padding-left: 24px;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.restore-subpath-row .subpath-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.restore-subpath-row input {
+  font-size: 13px;
+  padding: 4px 8px;
+  flex: 1;
+}

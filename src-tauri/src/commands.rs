@@ -539,6 +539,7 @@ pub async fn preview_restore(
     state: State<'_, Mutex<AppState>>,
     snapshot: Option<String>,
     job_indices: Vec<usize>,
+    subpaths: Vec<String>,
     delete_extra: bool,
 ) -> Result<Vec<String>, String> {
     let (cfg, mp) = {
@@ -561,20 +562,28 @@ pub async fn preview_restore(
         }
     }
 
-    let jobs: Vec<SyncJob> = job_indices
+    for sub in &subpaths {
+        if !sub.is_empty() {
+            validate_subpath(sub)?;
+        }
+    }
+
+    let job_pairs: Vec<(SyncJob, Option<String>)> = job_indices
         .iter()
-        .filter_map(|&i| cfg.jobs.get(i))
-        .cloned()
+        .zip(subpaths.into_iter())
+        .filter_map(|(&i, sub)| {
+            cfg.jobs.get(i).map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
+        })
         .collect();
 
-    if jobs.is_empty() {
+    if job_pairs.is_empty() {
         return Err("No jobs selected".to_owned());
     }
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut all_lines = Vec::new();
-        for job in &jobs {
-            let mut args = rsync_restore_args(job, &mp, snapshot.as_deref(), delete_extra);
+        for (job, subpath) in &job_pairs {
+            let mut args = rsync_restore_args(job, &mp, snapshot.as_deref(), delete_extra, subpath.as_deref());
             args.push("--dry-run".to_owned());
             args.push("--stats".to_owned());
             all_lines.push(format!(">>> [{}] dry-run", job.name));
@@ -607,6 +616,7 @@ pub fn start_restore(
     state: State<'_, Mutex<AppState>>,
     snapshot: Option<String>,
     job_indices: Vec<usize>,
+    subpaths: Vec<String>,
     delete_extra: bool,
 ) -> Result<(), String> {
     let (cfg, mp, progress) = {
@@ -632,11 +642,19 @@ pub fn start_restore(
         }
     }
 
-    let jobs: Vec<SyncJob> = job_indices
+    for sub in &subpaths {
+        if !sub.is_empty() {
+            validate_subpath(sub)?;
+        }
+    }
+
+    let (jobs, job_subpaths): (Vec<SyncJob>, Vec<Option<String>>) = job_indices
         .iter()
-        .filter_map(|&i| cfg.jobs.get(i))
-        .cloned()
-        .collect();
+        .zip(subpaths.into_iter())
+        .filter_map(|(&i, sub)| {
+            cfg.jobs.get(i).map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
+        })
+        .unzip();
 
     if jobs.is_empty() {
         return Err("No jobs selected".to_owned());
@@ -653,12 +671,23 @@ pub fn start_restore(
         s.backup_finished_msg = None;
     }
 
-    run_restore(jobs, mp, snapshot, delete_extra, progress);
+    run_restore(jobs, job_subpaths, mp, snapshot, delete_extra, progress);
     Ok(())
 }
 
 fn load_config(mp: &Path) -> Config {
     Config::load(mp).unwrap_or_default()
+}
+
+fn validate_subpath(sub: &str) -> Result<(), String> {
+    use std::path::Component;
+    for comp in Path::new(sub).components() {
+        match comp {
+            Component::Normal(_) => {}
+            _ => return Err(format!("Invalid subpath \"{sub}\": must use only plain directory names (no '..', '/', or leading '.')")),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

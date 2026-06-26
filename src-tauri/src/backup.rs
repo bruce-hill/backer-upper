@@ -80,7 +80,7 @@ pub fn list_snapshot_names(drive_root: &Path) -> Vec<String> {
     names
 }
 
-pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&str>, delete_extra: bool) -> Vec<String> {
+pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&str>, delete_extra: bool, subpath: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-av".to_owned(),
         "--info=progress2".to_owned(),
@@ -90,17 +90,23 @@ pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&st
     if delete_extra {
         args.push("--delete".to_owned());
     }
-    let src_dir = match snapshot {
+    let mut src_dir = match snapshot {
         Some(snap) => drive_root.join("snapshots").join(snap).join(&job.destination),
         None => drive_root.join(&job.destination),
     };
+    let mut dst_dir = job.source.clone();
+    if let Some(sub) = subpath.filter(|s| !s.is_empty()) {
+        src_dir = src_dir.join(sub);
+        dst_dir = dst_dir.join(sub);
+    }
     args.push(format!("{}/", src_dir.display()));
-    args.push(format!("{}/", job.source.display()));
+    args.push(format!("{}/", dst_dir.display()));
     args
 }
 
 pub fn run_restore(
     jobs: Vec<SyncJob>,
+    subpaths: Vec<Option<String>>,
     drive_root: PathBuf,
     snapshot: Option<String>,
     delete_extra: bool,
@@ -121,7 +127,7 @@ pub fn run_restore(
 
         let start = std::time::Instant::now();
 
-        for (idx, job) in jobs.iter().enumerate() {
+        for (idx, (job, subpath)) in jobs.iter().zip(subpaths.iter()).enumerate() {
             if progress.lock().unwrap().cancelled {
                 break;
             }
@@ -136,7 +142,7 @@ pub fn run_restore(
                 p.current_file.clear();
             }
 
-            let args = rsync_restore_args(job, &drive_root, snapshot.as_deref(), delete_extra);
+            let args = rsync_restore_args(job, &drive_root, snapshot.as_deref(), delete_extra, subpath.as_deref());
             let mut child = match Command::new("rsync")
                 .args(&args)
                 .stdout(Stdio::piped())
