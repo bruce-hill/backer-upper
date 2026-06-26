@@ -16,14 +16,16 @@
     <main>
       <!-- DriveSelect -->
       <div id="screen-drive-select" class="screen">
-        <h2>Select Drive</h2>
+        <div class="screen-header">
+          <h2>Select Drive</h2>
+          <button id="btn-refresh">↻ Refresh</button>
+        </div>
         <div id="drive-list" class="drive-list">
           <div class="empty-state">Loading drives…</div>
         </div>
         <div class="btn-row">
-          <button id="btn-refresh">↻ Refresh</button>
+          <button id="btn-format-drive" class="danger-outline" disabled>Format for Backup</button>
           <button id="btn-open-drive" class="primary" disabled>Open Drive</button>
-          <button id="btn-format-drive" disabled>Format for Backup</button>
         </div>
         <div id="drive-select-error" class="error-text" style="display: none"></div>
       </div>

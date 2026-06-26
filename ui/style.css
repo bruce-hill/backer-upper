@@ -291,6 +291,14 @@ button.danger:hover {
   background: #b91c1c;
 }
 
+button.danger-outline {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+button.danger-outline:hover {
+  background: var(--danger-bg);
+}
+
 .btn-row {
   display: flex;
   gap: 8px;
@@ -299,12 +307,25 @@ button.danger:hover {
   flex-wrap: wrap;
 }
 
+/* Drive select screen */
+#screen-drive-select.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#btn-open-drive {
+  margin-left: auto;
+}
+
 /* Drive list */
 .drive-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 14px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 80px;
 }
 
 .drive-item {
