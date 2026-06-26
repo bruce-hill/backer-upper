@@ -79,6 +79,7 @@
           <button id="btn-add-job">+ Add Job</button>
           <button id="btn-save-config" style="display: none" class="primary">Save Config</button>
           <span id="unsaved-indicator" style="display: none">Unsaved changes</span>
+          <button id="btn-restore" class="danger-outline">↺ Restore</button>
           <button id="btn-next" class="primary">Next →</button>
         </div>
         <div id="config-error" class="error-text" style="display: none"></div>
@@ -162,6 +163,63 @@
         <div class="btn-row" id="backup-btn-row">
           <button id="btn-backup-pause">Pause</button>
           <button id="btn-backup-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Restore -->
+      <div id="screen-restore" class="screen">
+        <div class="screen-header">
+          <h2>Restore from Backup</h2>
+        </div>
+
+        <div class="banner danger">
+          <strong>⚠ This will overwrite files on your computer.</strong>
+          Files from the selected backup will be copied to their original locations, replacing any
+          local versions. This cannot be undone — make sure you have any important unsaved work
+          elsewhere before proceeding.
+        </div>
+
+        <div class="card">
+          <div class="section-label">Restore from</div>
+          <div id="restore-snapshot-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-label">Jobs to restore</div>
+          <div id="restore-jobs-list"></div>
+        </div>
+
+        <div class="card">
+          <label class="radio-option">
+            <input type="checkbox" id="restore-delete-extra" />
+            <span>
+              <strong>Also delete local files not in the backup</strong>
+              <span class="radio-desc"
+                >Permanently removes local files that don't exist in the selected backup. Use with
+                caution.</span
+              >
+            </span>
+          </label>
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <label>Confirm</label>
+            <input
+              type="text"
+              id="restore-confirm-input"
+              placeholder='Type "RESTORE" to confirm'
+              autocomplete="off"
+            />
+          </div>
+          <div id="restore-validation-msg" class="error-text" style="display: none"></div>
+        </div>
+
+        <div id="restore-error" class="error-text" style="display: none"></div>
+
+        <div class="btn-row">
+          <button id="btn-restore-cancel">Cancel</button>
+          <button id="btn-do-restore" class="danger" disabled>Restore from Backup</button>
         </div>
       </div>
 

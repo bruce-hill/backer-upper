@@ -32,6 +32,8 @@ fn main() {
             commands::start_format,
             commands::get_format_progress,
             commands::get_status,
+            commands::list_snapshots,
+            commands::start_restore,
             commands::quit,
         ])
         .run(tauri::generate_context!())

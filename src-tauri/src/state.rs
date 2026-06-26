@@ -18,6 +18,7 @@ pub struct AppState {
     pub format_running: bool,
     pub format_drive_info: SharedDriveInfo,
     pub status_msg: Option<String>,
+    pub is_restore: bool,
 }
 
 impl AppState {
@@ -35,6 +36,7 @@ impl AppState {
             format_running: false,
             format_drive_info: Arc::new(Mutex::new(DriveInfo::default())),
             status_msg: None,
+            is_restore: false,
         }
     }
 }
