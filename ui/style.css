@@ -90,6 +90,16 @@ main {
   display: block;
 }
 
+.screen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.screen-header h2 {
+  margin-bottom: 0;
+}
+
 /* Cards */
 .card {
   background: var(--surface);
@@ -137,6 +147,7 @@ button:active {
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
 button.primary {
@@ -260,6 +271,11 @@ button.danger:hover {
   font-weight: 500;
   color: var(--text-muted);
   font-size: 15px;
+}
+
+input[type='checkbox'] {
+  width: auto;
+  cursor: pointer;
 }
 
 input[type='text'],
@@ -396,7 +412,7 @@ textarea {
 .step-dots {
   display: flex;
   gap: 8px;
-  margin: 10px 0;
+  margin: 10px 0 12px;
   align-items: center;
 }
 .step-dot {
@@ -475,10 +491,84 @@ textarea {
   word-break: break-all;
 }
 
+/* Terminal/dark card variant */
+.card.terminal {
+  background: #111827;
+  border-color: #374151;
+}
+.card.terminal em {
+  color: #9ca3af;
+}
+
+#format-probe-content {
+  color: #c8d6e5;
+  font-family: monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+/* Flush card (no padding, table fills edge-to-edge) */
+.card-flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Backup screen */
+#backup-job-info {
+  margin-bottom: 8px;
+}
+#backup-elapsed {
+  margin-bottom: 12px;
+}
+
+/* Config screen */
+#unsaved-indicator {
+  color: var(--warning);
+  font-size: 13px;
+}
+#btn-next {
+  margin-left: auto;
+}
+
+/* Job edit screen */
+#btn-job-delete {
+  margin-left: auto;
+}
+.excludes-label {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.excludes-label + textarea {
+  margin-top: 6px;
+}
+
+/* Format screen */
+#format-confirm-label {
+  color: var(--danger);
+}
+#format-cmd-preview {
+  margin-top: 8px;
+}
+#format-step-label {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+details {
+  margin-bottom: 14px;
+}
+
 /* Misc */
 .muted {
   color: var(--text-muted);
   font-size: 14px;
+}
+p.muted {
+  margin-bottom: 12px;
+}
+.card > p {
+  margin-bottom: 12px;
 }
 .error-text {
   color: var(--danger);
