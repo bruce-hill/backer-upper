@@ -499,3 +499,8 @@ pub fn get_status(state: State<'_, Mutex<AppState>>) -> AppStatus {
 fn load_config(mp: &PathBuf) -> Config {
     Config::load(mp).unwrap_or_default()
 }
+
+#[tauri::command]
+pub fn quit(app: tauri::AppHandle) {
+    app.exit(0);
+}
