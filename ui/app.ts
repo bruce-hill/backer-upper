@@ -507,9 +507,11 @@ function updateBackupUI(p: BackupProgress): void {
   } else {
     banner.style.display = 'none';
     jobInfo.innerHTML = p.running
-      ? `<span style="font-weight:600">${escHtml(p.job_name)}</span>
-         <span class="muted" style="margin-left:8px">${escHtml(p.current_file)}</span>
-         <span class="muted" style="margin-left:8px">ETA: ${escHtml(p.eta)}</span>`
+      ? `<div class="job-info-row">
+           <span class="job-info-name">${escHtml(p.job_name)}</span>
+           <span class="job-info-file muted">${escHtml(p.current_file)}</span>
+         </div>
+         <div class="job-info-eta muted">ETA: ${escHtml(p.eta)}</div>`
       : '';
   }
 

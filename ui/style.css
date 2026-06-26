@@ -529,8 +529,10 @@ textarea {
   justify-content: center;
   font-size: 15px;
   font-weight: 600;
-  color: white;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  text-shadow:
+    0 0 4px rgba(255, 255, 255, 0.95),
+    0 0 8px rgba(255, 255, 255, 0.7);
 }
 
 .log-box {
@@ -659,6 +661,26 @@ textarea {
 }
 #backup-elapsed {
   margin-bottom: 12px;
+}
+.job-info-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+.job-info-name {
+  font-weight: 600;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.job-info-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.job-info-eta {
+  margin-top: 2px;
 }
 
 /* Config screen */
