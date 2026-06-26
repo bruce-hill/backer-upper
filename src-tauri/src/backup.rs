@@ -213,6 +213,7 @@ pub fn run_backup(
             }
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
+                // exit code 24 = partial transfer due to vanished source files; treat as success
                 if code != 24 {
                     let mut p = progress.lock().unwrap();
                     p.error = Some(format!(
@@ -222,6 +223,14 @@ pub fn run_backup(
                     return;
                 }
             }
+        }
+
+        if progress.lock().unwrap().cancelled {
+            let elapsed = start.elapsed().as_secs_f64();
+            let mut p = progress.lock().unwrap();
+            p.elapsed_secs = elapsed;
+            p.current_job = total_jobs;
+            return;
         }
 
         let snapshot_name = chrono::Local::now().format("%Y-%m-%d").to_string();

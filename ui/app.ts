@@ -12,7 +12,7 @@ declare global {
     togglePause: () => Promise<void>;
     cancelBackup: () => Promise<void>;
     showConfigFromBackup: () => Promise<void>;
-    ejectFromBackup: () => Promise<void>;
+    ejectDrive: () => Promise<void>;
   }
 }
 
@@ -539,7 +539,7 @@ function updateBackupUI(p: BackupProgress): void {
     const btnRow = document.getElementById('backup-btn-row')!;
     btnRow.innerHTML = `
       <button onclick="showConfigFromBackup()">← Back to Config</button>
-      <button onclick="ejectFromBackup()" class="primary">Eject Drive</button>`;
+      <button onclick="ejectDrive()" class="primary">Eject Drive</button>`;
   }
 }
 
@@ -556,10 +556,6 @@ async function showConfigFromBackup(): Promise<void> {
   const status = await invoke<AppStatus>('get_status');
   if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
   enterConfig(status.mount_point, status.config);
-}
-
-async function ejectFromBackup(): Promise<void> {
-  await ejectDrive();
 }
 
 // ── Format Setup screen ───────────────────────────────────────────────────────
@@ -769,7 +765,7 @@ window.editJob = editJob;
 window.togglePause = togglePause;
 window.cancelBackup = cancelBackup;
 window.showConfigFromBackup = showConfigFromBackup;
-window.ejectFromBackup = ejectFromBackup;
+window.ejectDrive = ejectDrive;
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 

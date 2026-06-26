@@ -10,7 +10,6 @@ pub enum SyncMode {
     Media,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncJob {
     pub name: String,

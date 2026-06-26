@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -212,15 +212,16 @@ pub fn get_config(state: State<'_, Mutex<AppState>>) -> Option<Config> {
 
 #[tauri::command]
 pub fn save_config(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let s = state.lock().unwrap();
-    if let (Some(cfg), Some(mp)) = (&s.config, &s.mount_point) {
-        cfg.save(mp).map_err(|e| e.to_string())?;
-        drop(s);
-        state.lock().unwrap().config_dirty = false;
-        Ok(())
-    } else {
-        Err("No config or mount point".to_owned())
-    }
+    let (cfg, mp) = {
+        let s = state.lock().unwrap();
+        match (&s.config, &s.mount_point) {
+            (Some(cfg), Some(mp)) => (cfg.clone(), mp.clone()),
+            _ => return Err("No config or mount point".to_owned()),
+        }
+    };
+    cfg.save(&mp).map_err(|e| e.to_string())?;
+    state.lock().unwrap().config_dirty = false;
+    Ok(())
 }
 
 #[tauri::command]
@@ -240,8 +241,9 @@ pub fn add_job(state: State<'_, Mutex<AppState>>) -> Result<Config, String> {
             format!("Job {}", idx + 1),
             std::env::var("HOME").unwrap_or_default(),
         ));
+        let result = cfg.clone();
         s.config_dirty = true;
-        Ok(s.config.clone().unwrap())
+        Ok(result)
     } else {
         Err("No config loaded".to_owned())
     }
@@ -253,8 +255,9 @@ pub fn delete_job(state: State<'_, Mutex<AppState>>, idx: usize) -> Result<Confi
     if let Some(cfg) = &mut s.config {
         if idx < cfg.jobs.len() {
             cfg.jobs.remove(idx);
+            let result = cfg.clone();
             s.config_dirty = true;
-            Ok(s.config.clone().unwrap())
+            Ok(result)
         } else {
             Err("Job index out of range".to_owned())
         }
@@ -329,8 +332,11 @@ pub fn start_backup(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
         *p = BackupProgress::default();
     }
 
-    state.lock().unwrap().backup_running = true;
-    state.lock().unwrap().backup_finished_msg = None;
+    {
+        let mut s = state.lock().unwrap();
+        s.backup_running = true;
+        s.backup_finished_msg = None;
+    }
 
     run_backup(&cfg, &mp, progress);
     Ok(())
@@ -460,8 +466,11 @@ pub fn start_format(
     label: String,
     passphrase: String,
 ) -> Result<(), String> {
-    let progress = std::sync::Arc::clone(&state.lock().unwrap().format_progress);
-    state.lock().unwrap().format_running = true;
+    let progress = {
+        let mut s = state.lock().unwrap();
+        s.format_running = true;
+        std::sync::Arc::clone(&s.format_progress)
+    };
     run_format(device, is_disk, label, passphrase, progress);
     Ok(())
 }
@@ -489,7 +498,7 @@ pub fn get_status(state: State<'_, Mutex<AppState>>) -> AppStatus {
     }
 }
 
-fn load_config(mp: &PathBuf) -> Config {
+fn load_config(mp: &Path) -> Config {
     Config::load(mp).unwrap_or_default()
 }
 
