@@ -599,7 +599,7 @@ async function goToRestore(): Promise<void> {
           <input type="checkbox" class="restore-job-check" data-idx="${i}" checked />
           <span>
             <strong>${escHtml(j.name)}</strong>
-            <span class="radio-desc">${escHtml(String(j.destination))} → ${escHtml(j.source)}</span>
+            <span class="radio-desc">from <code>${escHtml(String(j.destination))}</code> on drive → <code>${escHtml(j.source)}</code> locally</span>
           </span>
         </label>
         <div class="restore-subpath-row">
