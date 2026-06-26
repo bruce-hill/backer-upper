@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -65,6 +65,163 @@ pub fn format_duration(secs: u64) -> String {
 }
 
 pub type SharedProgress = Arc<Mutex<BackupProgress>>;
+
+pub fn list_snapshot_names(drive_root: &Path) -> Vec<String> {
+    let snapshots_dir = drive_root.join("snapshots");
+    let mut names: Vec<String> = match std::fs::read_dir(&snapshots_dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(_) => vec![],
+    };
+    names.sort();
+    names
+}
+
+pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&str>, delete_extra: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-av".to_owned(),
+        "--info=progress2".to_owned(),
+        "--no-inc-recursive".to_owned(),
+        "--partial-dir=.rsync-partial".to_owned(),
+    ];
+    if delete_extra {
+        args.push("--delete".to_owned());
+    }
+    let src_dir = match snapshot {
+        Some(snap) => drive_root.join("snapshots").join(snap).join(&job.destination),
+        None => drive_root.join(&job.destination),
+    };
+    args.push(format!("{}/", src_dir.display()));
+    args.push(format!("{}/", job.source.display()));
+    args
+}
+
+pub fn run_restore(
+    jobs: Vec<SyncJob>,
+    drive_root: PathBuf,
+    snapshot: Option<String>,
+    delete_extra: bool,
+    progress: SharedProgress,
+) -> std::thread::JoinHandle<()> {
+    let total_jobs = jobs.len();
+    std::thread::spawn(move || {
+        {
+            let mut p = progress.lock().unwrap();
+            p.total_jobs = total_jobs;
+            p.current_job = 0;
+            p.finished = false;
+            p.cancelled = false;
+            p.error = None;
+            p.child_pid = None;
+            p.paused = false;
+        }
+
+        let start = std::time::Instant::now();
+
+        for (idx, job) in jobs.iter().enumerate() {
+            if progress.lock().unwrap().cancelled {
+                break;
+            }
+            {
+                let mut p = progress.lock().unwrap();
+                p.current_job = idx;
+                p.job_name = job.name.clone();
+                p.files_transferred = 0;
+                p.files_total = 0;
+                p.bytes_transferred = 0;
+                p.bytes_total = 0;
+                p.current_file.clear();
+            }
+
+            let args = rsync_restore_args(job, &drive_root, snapshot.as_deref(), delete_extra);
+            let mut child = match Command::new("rsync")
+                .args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let mut p = progress.lock().unwrap();
+                    p.error = Some(format!("failed to spawn rsync: {e}"));
+                    return;
+                }
+            };
+
+            progress.lock().unwrap().child_pid = Some(child.id());
+
+            if let Some(stdout) = child.stdout.take() {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    let Ok(line) = line else { continue };
+                    let elapsed = start.elapsed().as_secs_f64();
+                    for seg in line.split('\r') {
+                        let seg = seg.trim();
+                        if !seg.is_empty() {
+                            parse_rsync_line(seg, &progress, elapsed);
+                        }
+                    }
+                    let display = line
+                        .split('\r')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .last()
+                        .unwrap_or("")
+                        .to_owned();
+                    if !display.is_empty() {
+                        let mut p = progress.lock().unwrap();
+                        p.elapsed_secs = elapsed;
+                        if p.log_lines.len() > 500 {
+                            p.log_lines.remove(0);
+                        }
+                        p.log_lines.push(display);
+                    }
+                }
+            }
+
+            let wait_result = child.wait();
+            let cancelled = {
+                let mut p = progress.lock().unwrap();
+                p.child_pid = None;
+                p.cancelled
+            };
+
+            let status = match wait_result {
+                Ok(s) => s,
+                Err(e) => {
+                    if cancelled {
+                        break;
+                    }
+                    let mut p = progress.lock().unwrap();
+                    p.error = Some(format!("rsync wait error: {e}"));
+                    return;
+                }
+            };
+
+            if cancelled {
+                break;
+            }
+            if !status.success() {
+                let code = status.code().unwrap_or(-1);
+                let mut p = progress.lock().unwrap();
+                p.error = Some(format!(
+                    "rsync exited with code {code} for job \"{}\"",
+                    job.name
+                ));
+                return;
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let mut p = progress.lock().unwrap();
+        p.finished = true;
+        p.elapsed_secs = elapsed;
+        p.current_job = total_jobs;
+    })
+}
 
 pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
@@ -193,10 +350,14 @@ pub fn run_backup(
                 }
             }
 
-            progress.lock().unwrap().child_pid = None;
-            let cancelled = progress.lock().unwrap().cancelled;
+            let wait_result = child.wait();
+            let cancelled = {
+                let mut p = progress.lock().unwrap();
+                p.child_pid = None;
+                p.cancelled
+            };
 
-            let status = match child.wait() {
+            let status = match wait_result {
                 Ok(s) => s,
                 Err(e) => {
                     if cancelled {
