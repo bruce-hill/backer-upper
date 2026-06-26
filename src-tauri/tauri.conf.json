@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "identifier": "com.brucehill.backer-upper",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
