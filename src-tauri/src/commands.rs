@@ -498,6 +498,17 @@ pub fn get_drive_probe(state: State<'_, Mutex<AppState>>) -> DriveInfo {
 }
 
 #[tauri::command]
+pub fn format_command_preview(
+    device: String,
+    is_disk: bool,
+    label: String,
+    fstype: String,
+    encrypt: bool,
+) -> Vec<String> {
+    crate::format::format_command_preview(&device, is_disk, &label, &fstype, encrypt)
+}
+
+#[tauri::command]
 pub fn start_format(
     state: State<'_, Mutex<AppState>>,
     device: String,
@@ -576,9 +587,6 @@ pub async fn preview_restore(
         if snap.contains('/') {
             return Err("Invalid snapshot name".to_owned());
         }
-        if !list_snapshot_names(&mp).contains(snap) {
-            return Err(format!("Snapshot not found: {snap}"));
-        }
     }
 
     for sub in &subpaths {
@@ -600,6 +608,11 @@ pub async fn preview_restore(
     }
 
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(ref snap) = snapshot {
+            if !list_snapshot_names(&mp).contains(snap) {
+                return Err(format!("Snapshot not found: {snap}"));
+            }
+        }
         let mut all_lines = Vec::new();
         for (job, subpath) in &job_pairs {
             let mut args = rsync_restore_args(job, &mp, snapshot.as_deref(), delete_extra, subpath.as_deref());

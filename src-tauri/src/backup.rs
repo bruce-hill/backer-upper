@@ -212,12 +212,15 @@ pub fn run_restore(
             }
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
-                let mut p = progress.lock().unwrap();
-                p.error = Some(format!(
-                    "rsync exited with code {code} for job \"{}\"",
-                    job.name
-                ));
-                return;
+                // exit code 24 = partial transfer due to vanished source files; treat as success
+                if code != 24 {
+                    let mut p = progress.lock().unwrap();
+                    p.error = Some(format!(
+                        "rsync exited with code {code} for job \"{}\"",
+                        job.name
+                    ));
+                    return;
+                }
             }
         }
 

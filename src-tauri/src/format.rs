@@ -195,29 +195,30 @@ fn doas_with_passphrase(
     Ok(())
 }
 
+fn device_is_mounted(dev: &str, mounts: &str) -> bool {
+    let canonical = std::fs::canonicalize(dev).ok();
+    mounts.lines().any(|line| {
+        let mount_dev = line.split_whitespace().next().unwrap_or("");
+        if mount_dev == dev {
+            return true;
+        }
+        if let Some(ref c) = canonical {
+            if let Ok(mc) = std::fs::canonicalize(mount_dev) {
+                return &mc == c;
+            }
+        }
+        false
+    })
+}
+
 fn find_mounted_device(device: &str, is_disk: bool) -> Option<String> {
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    let is_mounted = |dev: &str| -> bool {
-        let canonical = std::fs::canonicalize(dev).ok();
-        mounts.lines().any(|line| {
-            let mount_dev = line.split_whitespace().next().unwrap_or("");
-            if mount_dev == dev {
-                return true;
-            }
-            if let Some(ref c) = canonical {
-                if let Ok(mc) = std::fs::canonicalize(mount_dev) {
-                    return &mc == c;
-                }
-            }
-            false
-        })
-    };
-    if is_mounted(device) {
+    if device_is_mounted(device, &mounts) {
         return Some(device.to_owned());
     }
     if is_disk {
         let part = crate::drives::partition_path(device);
-        if Path::new(&part).exists() && is_mounted(&part) {
+        if Path::new(&part).exists() && device_is_mounted(&part, &mounts) {
             return Some(part);
         }
     }
@@ -257,30 +258,15 @@ fn validate_device(device: &str, is_disk: bool, progress: &SharedFormatProgress)
     log(progress, &format!("✓ {device} is hotplug/removable"));
 
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    let is_mounted = |dev: &str| -> bool {
-        let canonical = std::fs::canonicalize(dev).ok();
-        mounts.lines().any(|line| {
-            let mount_dev = line.split_whitespace().next().unwrap_or("");
-            if mount_dev == dev {
-                return true;
-            }
-            if let Some(ref c) = canonical {
-                if let Ok(mc) = std::fs::canonicalize(mount_dev) {
-                    return &mc == c;
-                }
-            }
-            false
-        })
-    };
 
-    if is_mounted(device) {
+    if device_is_mounted(device, &mounts) {
         anyhow::bail!(
             "SAFETY ABORT: {device} is currently mounted. Unmount or eject it before formatting."
         );
     }
     if is_disk {
         let partition = crate::drives::partition_path(device);
-        if Path::new(&partition).exists() && is_mounted(&partition) {
+        if Path::new(&partition).exists() && device_is_mounted(&partition, &mounts) {
             anyhow::bail!(
                 "SAFETY ABORT: partition {partition} is currently mounted. \
                  Unmount or eject it before formatting."
@@ -301,6 +287,81 @@ fn validate_device(device: &str, is_disk: bool, progress: &SharedFormatProgress)
     Ok(())
 }
 
+// A single step in the format sequence. Both the executor and the preview are
+// derived from the same Vec<FormatStep>, so they cannot diverge.
+// `preview` is the line shown to the user; None means an internal-only step.
+struct FormatStep {
+    preview: Option<String>,
+    action: FormatAction,
+}
+
+enum FormatAction {
+    Advance(String),
+    Doas { args: Vec<String>, needs_passphrase: bool, is_cleanup: bool },
+    WaitForDevice(String),
+    CheckDevice(String),
+}
+
+fn doas_step(args: &[&str]) -> FormatStep {
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: false, is_cleanup: false } }
+}
+
+fn doas_passphrase_step(args: &[&str]) -> FormatStep {
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: true, is_cleanup: false } }
+}
+
+fn doas_cleanup_step(args: &[&str]) -> FormatStep {
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: false, is_cleanup: true } }
+}
+
+fn build_format_steps(device: &str, is_disk: bool, label: &str, fstype: &str, encrypt: bool) -> Vec<FormatStep> {
+    let no_preview = |action| FormatStep { preview: None, action };
+    let mapper = "backer-upper-format";
+    let mapper_dev = format!("/dev/mapper/{mapper}");
+    let mkfs_cmd = format!("mkfs.{fstype}");
+    let format_step_name = format!("Formatting filesystem ({fstype})");
+    let mut steps: Vec<FormatStep> = Vec::new();
+
+    let partition = if is_disk {
+        let part = crate::drives::partition_path(device);
+        steps.push(no_preview(FormatAction::Advance("Zeroing drive".into())));
+        steps.push(doas_step(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"]));
+        steps.push(no_preview(FormatAction::Advance("Creating partition".into())));
+        steps.push(doas_step(&["parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%"]));
+        steps.push(no_preview(FormatAction::WaitForDevice(part.clone())));
+        part
+    } else {
+        steps.push(no_preview(FormatAction::Advance("Zeroing partition".into())));
+        steps.push(doas_step(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"]));
+        device.to_owned()
+    };
+
+    if encrypt {
+        steps.push(no_preview(FormatAction::Advance("Encrypting with LUKS".into())));
+        steps.push(doas_passphrase_step(&["cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file", "-", &partition]));
+        steps.push(no_preview(FormatAction::Advance(format_step_name)));
+        steps.push(doas_passphrase_step(&["cryptsetup", "luksOpen", "--key-file", "-", &partition, mapper]));
+        steps.push(no_preview(FormatAction::CheckDevice(mapper_dev.clone())));
+        steps.push(doas_step(&[&mkfs_cmd, "-L", label, &mapper_dev]));
+        steps.push(doas_cleanup_step(&["cryptsetup", "luksClose", mapper]));
+    } else {
+        steps.push(no_preview(FormatAction::Advance(format_step_name)));
+        steps.push(doas_step(&[&mkfs_cmd, "-L", label, &partition]));
+    }
+
+    steps
+}
+
+pub fn format_command_preview(device: &str, is_disk: bool, label: &str, fstype: &str, encrypt: bool) -> Vec<String> {
+    build_format_steps(device, is_disk, label, fstype, encrypt)
+        .into_iter()
+        .filter_map(|step| step.preview)
+        .collect()
+}
+
 fn do_format(
     device: &str,
     is_disk: bool,
@@ -310,8 +371,6 @@ fn do_format(
     passphrase: &str,
     progress: &SharedFormatProgress,
 ) -> Result<()> {
-    let mapper = "backer-upper-format";
-
     if let Some(mounted_dev) = find_mounted_device(device, is_disk) {
         progress.lock().unwrap().total_steps += 1;
         advance(progress, "Unmounting drive");
@@ -321,107 +380,74 @@ fn do_format(
 
     validate_device(device, is_disk, progress)?;
 
-    let partition: String = if is_disk {
-        advance(progress, "Zeroing drive");
-        doas_run(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"], progress)?;
-        advance(progress, "Creating partition");
-        doas_run(
-            &["parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%"],
-            progress,
-        )?;
-        let part = crate::drives::partition_path(device);
-        log(progress, &format!("Waiting for {part} to appear…"));
-        let mut appeared = false;
-        for _ in 0..20 {
-            let _ = Command::new("doas")
-                .args(["udevadm", "settle"])
-                .stdin(Stdio::null())
-                .status();
-            if Path::new(&part).exists() {
-                appeared = true;
-                break;
+    let steps = build_format_steps(device, is_disk, label, fstype, encrypt);
+    let mut pending_error: Option<anyhow::Error> = None;
+
+    for step in steps {
+        match step.action {
+            FormatAction::Advance(name) => {
+                if pending_error.is_none() {
+                    advance(progress, &name);
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            FormatAction::Doas { args, needs_passphrase, is_cleanup } => {
+                if pending_error.is_some() && !is_cleanup {
+                    continue;
+                }
+                let refs: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+                let result = if needs_passphrase {
+                    doas_with_passphrase(&refs, passphrase, progress)
+                } else {
+                    doas_run(&refs, progress)
+                };
+                if let Err(e) = result {
+                    if pending_error.is_none() && !is_cleanup {
+                        pending_error = Some(e);
+                    }
+                }
+            }
+            FormatAction::WaitForDevice(path) => {
+                if pending_error.is_some() {
+                    continue;
+                }
+                log(progress, &format!("Waiting for {path} to appear…"));
+                let mut appeared = false;
+                for _ in 0..20 {
+                    let _ = Command::new("doas")
+                        .args(["udevadm", "settle"])
+                        .stdin(Stdio::null())
+                        .status();
+                    if Path::new(&path).exists() {
+                        appeared = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                if appeared {
+                    log(progress, &format!("✓ {path} is ready"));
+                } else {
+                    pending_error = Some(anyhow::anyhow!(
+                        "Partition device {path} did not appear after partitioning. \
+                         Try replugging the drive and running again."
+                    ));
+                }
+            }
+            FormatAction::CheckDevice(path) => {
+                if pending_error.is_some() {
+                    continue;
+                }
+                if Path::new(&path).exists() {
+                    log(progress, &format!("✓ {path} is ready"));
+                } else {
+                    pending_error = Some(anyhow::anyhow!(
+                        "Mapper device {path} did not appear after luksOpen. Cannot continue."
+                    ));
+                }
+            }
         }
-        if !appeared {
-            anyhow::bail!(
-                "Partition device {part} did not appear after partitioning. \
-                 Try replugging the drive and running again."
-            );
-        }
-        log(progress, &format!("✓ {part} is ready"));
-        part
-    } else {
-        advance(progress, "Zeroing partition");
-        doas_run(&["dd", "if=/dev/zero", &format!("of={device}"), "bs=4M"], progress)?;
-        device.to_owned()
-    };
-
-    let mkfs_cmd = format!("mkfs.{fstype}");
-    let format_step = format!("Formatting filesystem ({fstype})");
-
-    if encrypt {
-        advance(progress, "Encrypting with LUKS");
-        doas_with_passphrase(
-            &[
-                "cryptsetup",
-                "luksFormat",
-                "--type",
-                "luks2",
-                "--batch-mode",
-                "--key-file",
-                "-",
-                &partition,
-            ],
-            passphrase,
-            progress,
-        )?;
-
-        advance(progress, &format_step);
-        doas_with_passphrase(
-            &["cryptsetup", "luksOpen", "--key-file", "-", &partition, mapper],
-            passphrase,
-            progress,
-        )?;
-
-        let mapper_dev = format!("/dev/mapper/{mapper}");
-        if !Path::new(&mapper_dev).exists() {
-            anyhow::bail!(
-                "Mapper device {mapper_dev} did not appear after luksOpen. Cannot continue with {mkfs_cmd}."
-            );
-        }
-        log(progress, &format!("✓ {mapper_dev} is ready"));
-
-        log(progress, &format!("$ doas {mkfs_cmd} -L {label} {mapper_dev}"));
-        let mkfs_result = Command::new("doas")
-            .args([mkfs_cmd.as_str(), "-L", label, &mapper_dev])
-            .stdin(Stdio::null())
-            .output();
-
-        log(progress, &format!("$ doas cryptsetup luksClose {mapper}"));
-        let close_result = Command::new("doas")
-            .args(["cryptsetup", "luksClose", mapper])
-            .stdin(Stdio::null())
-            .output();
-
-        let mkfs_out = mkfs_result.with_context(|| format!("failed to run {mkfs_cmd}"))?;
-        append_output(progress, &mkfs_out.stdout, &mkfs_out.stderr);
-        if !mkfs_out.status.success() {
-            anyhow::bail!(
-                "{mkfs_cmd} failed (exit {}): {}",
-                mkfs_out.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&mkfs_out.stderr).trim()
-            );
-        }
-        if let Ok(out) = close_result {
-            append_output(progress, &out.stdout, &out.stderr);
-        }
-    } else {
-        advance(progress, &format_step);
-        doas_run(&[mkfs_cmd.as_str(), "-L", label, &partition], progress)?;
     }
 
-    Ok(())
+    pending_error.map_or(Ok(()), Err)
 }
 
 pub fn run_format(
@@ -433,18 +459,13 @@ pub fn run_format(
     passphrase: String,
     progress: SharedFormatProgress,
 ) -> std::thread::JoinHandle<()> {
-    let total = match (is_disk, encrypt) {
-        (true, true)  => 4,
-        (true, false) => 3,
-        (false, true) => 3,
-        (false, false) => 2,
-    };
+    let total = build_format_steps(&device, is_disk, &label, &fstype, encrypt)
+        .iter()
+        .filter(|s| matches!(s.action, FormatAction::Advance(_)))
+        .count();
     {
         let mut p = progress.lock().unwrap();
-        *p = FormatProgress {
-            total_steps: total,
-            ..Default::default()
-        };
+        *p = FormatProgress { total_steps: total, ..Default::default() };
     }
     std::thread::spawn(move || {
         match do_format(&device, is_disk, &label, &fstype, encrypt, &passphrase, &progress) {

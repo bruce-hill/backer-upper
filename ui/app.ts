@@ -757,26 +757,14 @@ function buildFormatCmdPreview(device: string, isDisk: boolean): void {
   const label =
     (document.getElementById('format-label') as HTMLInputElement).value.trim() || '<label>';
   const fstype = (document.getElementById('format-fstype') as HTMLSelectElement).value || 'btrfs';
-  const luks = (document.getElementById('format-luks') as HTMLInputElement).checked;
-  const part = isDisk ? (device.match(/\d$/) ? device + 'p1' : device + '1') : device;
-  const lines: string[] = [];
-  if (isDisk) {
-    lines.push('doas wipefs -a ' + device);
-    lines.push('doas parted -s ' + device + ' mklabel gpt mkpart primary 0% 100%');
-  } else {
-    lines.push('doas wipefs -a ' + device);
-  }
-  if (luks) {
-    lines.push('doas cryptsetup luksFormat --type luks2 ' + part);
-    lines.push('doas cryptsetup luksOpen ' + part + ' backer-upper-format');
-    lines.push('doas mkfs.' + fstype + ' -L ' + label + ' /dev/mapper/backer-upper-format');
-    lines.push('doas cryptsetup luksClose backer-upper-format');
-  } else {
-    lines.push('doas mkfs.' + fstype + ' -L ' + label + ' ' + part);
-  }
-  document.getElementById('format-cmd-preview')!.innerHTML = lines
-    .map((l) => `<div>${escHtml(l)}</div>`)
-    .join('');
+  const encrypt = (document.getElementById('format-luks') as HTMLInputElement).checked;
+  invoke<string[]>('format_command_preview', { device, isDisk, label, fstype, encrypt }).then(
+    (lines) => {
+      document.getElementById('format-cmd-preview')!.innerHTML = lines
+        .map((l) => `<div>${escHtml(l)}</div>`)
+        .join('');
+    },
+  );
 }
 
 function startProbe(device: string, fstype: string | undefined): void {

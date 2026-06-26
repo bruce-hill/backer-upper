@@ -30,6 +30,7 @@ fn main() {
             commands::cancel_backup,
             commands::start_probe_drive,
             commands::get_drive_probe,
+            commands::format_command_preview,
             commands::start_format,
             commands::get_format_progress,
             commands::get_status,
