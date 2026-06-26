@@ -79,8 +79,8 @@
           <button id="btn-add-job">+ Add Job</button>
           <button id="btn-save-config" style="display: none" class="primary">Save Config</button>
           <span id="unsaved-indicator" style="display: none">Unsaved changes</span>
-          <button id="btn-restore" class="danger-outline">↺ Restore</button>
-          <button id="btn-next" class="primary">Next →</button>
+          <button id="btn-restore" class="danger-outline">Restore from Backup…</button>
+          <button id="btn-next" class="primary">Begin Backup…</button>
         </div>
         <div id="config-error" class="error-text" style="display: none"></div>
       </div>
@@ -94,22 +94,26 @@
             <input type="text" id="job-name" placeholder="e.g. Home" />
             <label>Source folder</label>
             <input type="text" id="job-source" placeholder="/home/user" />
-            <label>Dest (on drive)</label>
+            <label>Destination (on drive)</label>
             <input type="text" id="job-dest" placeholder="home" />
             <label>Mode</label>
             <div class="radio-group">
               <label class="radio-option">
                 <input type="radio" name="job-mode" value="Backup" />
                 <span>
-                  <strong>Backup</strong>
-                  <span class="radio-desc">Mirror — deletes from backup when deleted locally</span>
+                  <strong>Snapshot</strong>
+                  <span class="radio-desc"
+                    >Exact copy of current state; deletions are mirrored</span
+                  >
                 </span>
               </label>
               <label class="radio-option">
                 <input type="radio" name="job-mode" value="Media" />
                 <span>
-                  <strong>Media</strong>
-                  <span class="radio-desc">Archive — keeps all files even if deleted locally</span>
+                  <strong>Hoard</strong>
+                  <span class="radio-desc"
+                    >Only adds missing files; nothing is ever deleted from backup</span
+                  >
                 </span>
               </label>
             </div>
@@ -137,7 +141,7 @@
         <div id="preview-commands"></div>
         <div id="preview-empty" class="empty-state" style="display: none">No enabled jobs.</div>
         <div class="btn-row">
-          <button id="btn-preview-cancel">Cancel</button>
+          <button id="btn-preview-cancel">← Back</button>
           <button id="btn-run-backup" class="primary">▶ Run Backup</button>
         </div>
       </div>
@@ -238,7 +242,7 @@
         </div>
         <div id="restore-preview-error" class="error-text" style="display: none"></div>
         <div class="btn-row">
-          <button id="btn-restore-preview-back">← Back</button>
+          <button id="btn-restore-preview-back">← Change Settings</button>
           <button id="btn-restore-preview-proceed" class="danger">Restore from Backup</button>
         </div>
       </div>
@@ -293,7 +297,9 @@
 
                 <div class="btn-row">
                   <button id="btn-format-cancel">Cancel</button>
-                  <button id="btn-do-format" class="danger" disabled>Format Drive</button>
+                  <button id="btn-do-format" class="danger" disabled>
+                    Erase &amp; Format Drive
+                  </button>
                 </div>
               </div>
             </div>

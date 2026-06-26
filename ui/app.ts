@@ -267,7 +267,7 @@ function renderJobsTable(jobs: BackupJob[]): void {
     <tr>
       <td>${escHtml(j.name)}</td>
       <td class="mono">${escHtml(j.source)}</td>
-      <td>${escHtml(j.mode)}</td>
+      <td>${escHtml(j.mode === 'Backup' ? 'Snapshot' : j.mode === 'Media' ? 'Hoard' : j.mode)}</td>
       <td>
         <input type="checkbox" ${j.enabled ? 'checked' : ''}
           onchange="toggleJob(${i}, this.checked)">
