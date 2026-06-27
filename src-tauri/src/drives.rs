@@ -203,6 +203,49 @@ pub fn mount_device(device: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(mount_path))
 }
 
+pub fn doas_mount(device: &str) -> Result<PathBuf> {
+    let label = Command::new("lsblk")
+        .args(["-n", "-o", "LABEL", device])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "backup".to_owned());
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".to_owned());
+    let mp = PathBuf::from(format!("/run/media/{user}/{label}"));
+
+    let mkdir = Command::new("doas")
+        .args(["mkdir", "-p", &mp.to_string_lossy()])
+        .status()
+        .context("doas mkdir failed")?;
+    if !mkdir.success() {
+        anyhow::bail!("could not create mountpoint {}", mp.display());
+    }
+
+    let out = Command::new("doas")
+        .args(["mount", device, &mp.to_string_lossy()])
+        .output()
+        .context("doas mount failed")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir(&mp);
+        anyhow::bail!("mount: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+
+    Ok(mp)
+}
+
+pub fn doas_unmount(mountpoint: &PathBuf) -> Result<()> {
+    let out = Command::new("doas")
+        .args(["umount", &mountpoint.to_string_lossy()])
+        .output()
+        .context("doas umount failed")?;
+    if !out.status.success() {
+        anyhow::bail!("umount: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let _ = std::fs::remove_dir(mountpoint);
+    Ok(())
+}
+
 pub fn udisksctl_unmount(device: &str) -> Result<()> {
     let out = Command::new("udisksctl")
         .args(["unmount", "--no-user-interaction", "-b", device])
@@ -271,7 +314,7 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
         anyhow::bail!("luksOpen failed: {}", stderr.trim());
     }
 
-    // Give udev a moment to register the new device with udisks2.
+    // Wait for the device-mapper node to appear.
     let _ = Command::new("udevadm").args(["settle"]).status();
     for _ in 0..20 {
         if std::path::Path::new(&cleartext_dev).exists() {
@@ -280,7 +323,7 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let mp = mount_device(&cleartext_dev).map_err(|e| {
+    let mp = doas_mount(&cleartext_dev).map_err(|e| {
         let _ = doas_luks_close();
         e
     })?;

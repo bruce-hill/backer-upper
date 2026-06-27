@@ -276,10 +276,10 @@ pub fn delete_job(state: State<'_, Mutex<AppState>>, idx: usize) -> Result<Confi
 
 #[tauri::command]
 pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let (mapper_name, mounted_device, child_pid) = {
+    let (mapper_name, mounted_device, mount_point, child_pid) = {
         let s = state.lock().unwrap();
         let pid = s.progress.lock().unwrap().child_pid;
-        (s.mapper_name.clone(), s.mounted_device.clone(), pid)
+        (s.mapper_name.clone(), s.mounted_device.clone(), s.mount_point.clone(), pid)
     };
 
     // Stop any running backup/restore before unmounting.
@@ -303,12 +303,20 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
 
     tauri::async_runtime::spawn_blocking(move || {
         let result = match (&mapper_name, &mounted_device) {
-            (Some(cleartext_dev), Some(luks_dev)) => drives::udisksctl_unmount(cleartext_dev)
-                .and_then(|()| if cleartext_dev.starts_with("/dev/mapper/") {
+            (Some(cleartext_dev), Some(luks_dev)) => {
+                let unmount = if cleartext_dev.starts_with("/dev/mapper/") {
+                    mount_point.as_ref()
+                        .map(|mp| drives::doas_unmount(mp))
+                        .unwrap_or_else(|| drives::udisksctl_unmount(cleartext_dev))
+                } else {
+                    drives::udisksctl_unmount(cleartext_dev)
+                };
+                unmount.and_then(|()| if cleartext_dev.starts_with("/dev/mapper/") {
                     drives::doas_luks_close()
                 } else {
                     drives::udisksctl_lock(luks_dev)
-                }),
+                })
+            },
             (None, Some(dev)) => drives::udisksctl_unmount(dev),
             _ => Ok(()),
         };
