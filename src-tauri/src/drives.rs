@@ -231,6 +231,21 @@ pub fn doas_mount(device: &str) -> Result<PathBuf> {
         anyhow::bail!("mount: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
 
+    // mkfs creates the filesystem root owned by root; fix it so the user can write.
+    let uid = Command::new("id").arg("-u").output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
+    let gid = Command::new("id").arg("-g").output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
+    if !uid.is_empty() {
+        let _ = Command::new("doas")
+            .args(["chown", &format!("{uid}:{gid}"), &mp.to_string_lossy()])
+            .status();
+    }
+
     Ok(mp)
 }
 
