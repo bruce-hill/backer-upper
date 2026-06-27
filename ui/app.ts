@@ -137,9 +137,26 @@ let treeSource = '';
 let treeRoots: TreeNode[] = [];
 let treeLoadError = '';
 let treeLoadGen = 0;
-let excludedPaths = new Set<string>();
-let activePresets = new Set<string>();
 let treeLoaded = false;
+
+function getExcludeTextarea(): HTMLTextAreaElement {
+  return document.getElementById('job-excludes-manual') as HTMLTextAreaElement;
+}
+
+function getTextareaLines(): string[] {
+  return getExcludeTextarea().value.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+function getTextareaExcludedPaths(): Set<string> {
+  const presetPatternSet = new Set(PRESETS.flatMap((p) => p.patterns));
+  const paths = new Set<string>();
+  for (const line of getTextareaLines()) {
+    if (!presetPatternSet.has(line) && line.startsWith('/') && !/[*?[{]/.test(line)) {
+      paths.add(line.replace(/^\//, '').replace(/\/$/, ''));
+    }
+  }
+  return paths;
+}
 
 const PRESETS: Array<{ id: string; label: string; title: string; patterns: string[] }> = [
   {
@@ -396,7 +413,7 @@ async function addJob(): Promise<void> {
 
 // ── Excludes file tree ────────────────────────────────────────────────────────
 
-function isEffectivelyExcluded(path: string): boolean {
+function isEffectivelyExcluded(path: string, excludedPaths: Set<string>): boolean {
   if (excludedPaths.has(path)) return true;
   const parts = path.split('/');
   for (let i = 1; i < parts.length; i++) {
@@ -405,20 +422,23 @@ function isEffectivelyExcluded(path: string): boolean {
   return false;
 }
 
-function hasExcludedDescendant(node: TreeNode): boolean {
+function hasExcludedDescendant(node: TreeNode, excludedPaths: Set<string>): boolean {
   if (!node.children) return false;
-  return node.children.some((c) => excludedPaths.has(c.path) || hasExcludedDescendant(c));
+  return node.children.some((c) => excludedPaths.has(c.path) || hasExcludedDescendant(c, excludedPaths));
 }
 
 function toggleTreeNode(path: string): void {
+  const ta = getExcludeTextarea();
+  const pattern = '/' + path;
+  const excludedPaths = getTextareaExcludedPaths();
+  let lines = getTextareaLines();
   if (excludedPaths.has(path)) {
-    excludedPaths.delete(path);
-  } else if (!isEffectivelyExcluded(path)) {
-    excludedPaths.add(path);
-    for (const p of [...excludedPaths]) {
-      if (p.startsWith(path + '/')) excludedPaths.delete(p);
-    }
+    lines = lines.filter((l) => l !== pattern && l !== pattern + '/');
+  } else if (!isEffectivelyExcluded(path, excludedPaths)) {
+    lines.push(pattern);
+    lines = lines.filter((l) => l === pattern || !l.startsWith(pattern + '/'));
   }
+  ta.value = lines.join('\n');
   renderExcludesTree();
 }
 
@@ -467,34 +487,7 @@ async function loadExcludesTree(source: string, excludes: string[]): Promise<voi
   treeRoots = [];
   treeLoaded = false;
   treeLoadError = '';
-  excludedPaths = new Set();
-  activePresets = new Set();
-
-  // Split excludes into tree-path patterns and everything else.
-  // Preset patterns take priority: they go to nonTreePatterns regardless of leading slash,
-  // so preset detection can find them.
-  const presetPatternSet = new Set(PRESETS.flatMap((p) => p.patterns));
-  const nonTreePatterns: string[] = [];
-  for (const exc of excludes) {
-    if (!presetPatternSet.has(exc) && exc.startsWith('/') && !/[*?[{]/.test(exc)) {
-      excludedPaths.add(exc.replace(/^\//, '').replace(/\/$/, ''));
-    } else {
-      nonTreePatterns.push(exc);
-    }
-  }
-
-  // Detect which presets are fully present in nonTreePatterns; the rest go to manual textarea
-  const claimedPatterns = new Set<string>();
-  for (const preset of PRESETS) {
-    if (preset.patterns.every((p) => nonTreePatterns.includes(p))) {
-      activePresets.add(preset.id);
-      preset.patterns.forEach((p) => claimedPatterns.add(p));
-    }
-  }
-  const manualPatterns = nonTreePatterns.filter((p) => !claimedPatterns.has(p));
-  (document.getElementById('job-excludes-manual') as HTMLTextAreaElement).value =
-    manualPatterns.join('\n');
-
+  getExcludeTextarea().value = excludes.join('\n');
   renderPresetChips();
   renderExcludesTree();
   if (!treeSource) return;
@@ -568,7 +561,8 @@ function renderExcludesTree(): void {
     return;
   }
 
-  el.innerHTML = renderTreeNodes(treeRoots, 0);
+  const excludedPaths = getTextareaExcludedPaths();
+  el.innerHTML = renderTreeNodes(treeRoots, 0, excludedPaths);
   el.scrollTop = scrollTop;
 
   el.querySelectorAll<HTMLInputElement>('.tree-check[data-ind]').forEach((cb) => {
@@ -582,15 +576,15 @@ function renderExcludesTree(): void {
   });
 }
 
-function renderTreeNodes(nodes: TreeNode[], depth: number): string {
-  return nodes.map((n) => renderTreeNode(n, depth)).join('');
+function renderTreeNodes(nodes: TreeNode[], depth: number, excludedPaths: Set<string>): string {
+  return nodes.map((n) => renderTreeNode(n, depth, excludedPaths)).join('');
 }
 
-function renderTreeNode(node: TreeNode, depth: number): string {
-  const effExcluded = isEffectivelyExcluded(node.path);
+function renderTreeNode(node: TreeNode, depth: number, excludedPaths: Set<string>): string {
+  const effExcluded = isEffectivelyExcluded(node.path, excludedPaths);
   const directExcl = excludedPaths.has(node.path);
   const viaAnc = effExcluded && !directExcl;
-  const indeterminate = !effExcluded && hasExcludedDescendant(node);
+  const indeterminate = !effExcluded && hasExcludedDescendant(node, excludedPaths);
   const checked = !effExcluded;
 
   const indent = 8 + depth * 20;
@@ -617,7 +611,7 @@ function renderTreeNode(node: TreeNode, depth: number): string {
     } else if (!node.children || node.children.length === 0) {
       childrenHtml = `<div class="tree-children"><div class="tree-msg">Empty directory</div></div>`;
     } else {
-      childrenHtml = `<div class="tree-children">${renderTreeNodes(node.children, depth + 1)}</div>`;
+      childrenHtml = `<div class="tree-children">${renderTreeNodes(node.children, depth + 1, excludedPaths)}</div>`;
     }
   }
 
@@ -634,20 +628,30 @@ function renderTreeNode(node: TreeNode, depth: number): string {
 }
 
 function renderPresetChips(): void {
+  const lines = new Set(getTextareaLines());
   const el = document.getElementById('presets-chips')!;
   el.innerHTML = PRESETS.map(
     (p) =>
-      `<button class="preset-chip${activePresets.has(p.id) ? ' active' : ''}" data-id="${escHtml(p.id)}" title="${escHtml(p.title)}">${escHtml(p.label)}</button>`
+      `<button class="preset-chip${p.patterns.every((pat) => lines.has(pat)) ? ' active' : ''}" data-id="${escHtml(p.id)}" title="${escHtml(p.title)}">${escHtml(p.label)}</button>`
   ).join('');
   el.querySelectorAll<HTMLButtonElement>('.preset-chip').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.id!;
-      if (activePresets.has(id)) {
-        activePresets.delete(id);
+      const preset = PRESETS.find((p) => p.id === id)!;
+      const ta = getExcludeTextarea();
+      let curLines = getTextareaLines();
+      const lineSet = new Set(curLines);
+      if (preset.patterns.every((p) => lineSet.has(p))) {
+        const patSet = new Set(preset.patterns);
+        curLines = curLines.filter((l) => !patSet.has(l));
       } else {
-        activePresets.add(id);
+        for (const p of preset.patterns) {
+          if (!lineSet.has(p)) curLines.push(p);
+        }
       }
+      ta.value = curLines.join('\n');
       renderPresetChips();
+      renderExcludesTree();
     });
   });
 }
@@ -655,22 +659,12 @@ function renderPresetChips(): void {
 function buildExcludes(): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
-  const add = (p: string) => {
-    if (!seen.has(p)) {
-      seen.add(p);
-      result.push(p);
+  for (const line of getTextareaLines()) {
+    if (!seen.has(line)) {
+      seen.add(line);
+      result.push(line);
     }
-  };
-  [...excludedPaths].sort().forEach((p) => add('/' + p));
-  for (const preset of PRESETS) {
-    if (activePresets.has(preset.id)) preset.patterns.forEach(add);
   }
-  const manualText = (document.getElementById('job-excludes-manual') as HTMLTextAreaElement).value;
-  manualText
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .forEach(add);
   return result;
 }
 
@@ -720,17 +714,23 @@ async function saveJob(): Promise<void> {
   }
 
   await invoke('update_config', { config });
+  await invoke('save_config');
   const newStatus = await invoke<AppStatus>('get_status');
   enterConfig(newStatus.mount_point!, newStatus.config!);
+  (document.getElementById('btn-save-config') as HTMLElement).style.display = newStatus.config_dirty ? '' : 'none';
+  (document.getElementById('unsaved-indicator') as HTMLElement).style.display = newStatus.config_dirty ? '' : 'none';
 }
 
 async function deleteJob(): Promise<void> {
   if (editingJobIdx === null) return;
   try {
     await invoke<BackupConfig>('delete_job', { idx: editingJobIdx });
+    await invoke('save_config');
     const status = await invoke<AppStatus>('get_status');
     if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
     enterConfig(status.mount_point, status.config);
+    (document.getElementById('btn-save-config') as HTMLElement).style.display = status.config_dirty ? '' : 'none';
+    (document.getElementById('unsaved-indicator') as HTMLElement).style.display = status.config_dirty ? '' : 'none';
   } catch (e) {
     alert('Delete failed: ' + e);
   }
@@ -1449,6 +1449,10 @@ document.getElementById('job-source')!.addEventListener('blur', () => {
   if (source !== treeSource) {
     void reloadTreeSource(source);
   }
+});
+document.getElementById('job-excludes-manual')!.addEventListener('input', () => {
+  renderExcludesTree();
+  renderPresetChips();
 });
 
 document.getElementById('btn-restore-cancel')!.addEventListener('click', async () => {
