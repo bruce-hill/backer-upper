@@ -225,6 +225,7 @@ let pendingRestoreDeleteExtra = false;
 function showScreen(name: string): void {
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
   document.getElementById('screen-' + name)!.classList.add('active');
+  document.querySelector('main')!.scrollTop = 0;
 }
 
 function setStatusBar(msg: string, loading = false): void {
