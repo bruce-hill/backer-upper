@@ -1245,7 +1245,7 @@ function updateFormatUI(p: FormatProgress): void {
     dotsEl.innerHTML = Array.from({ length: p.total_steps }, (_, i) => {
       const n = i + 1;
       let cls = 'step-dot';
-      if (n < p.step) cls += ' done';
+      if (n < p.step || (n === p.step && p.finished && !p.error)) cls += ' done';
       else if (n === p.step) cls += p.error ? ' error' : ' active';
       return `<div class="${cls}">${n}</div>`;
     }).join('');
