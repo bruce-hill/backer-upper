@@ -12,10 +12,10 @@
     "windows": [
       {
         "title": "Backer-Upper",
-        "width": 800,
-        "height": 640,
-        "minWidth": 600,
-        "minHeight": 480,
+        "width": 1200,
+        "height": 1200,
+        "minWidth": 900,
+        "minHeight": 720,
         "resizable": true
       }
     ],

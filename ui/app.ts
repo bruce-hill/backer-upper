@@ -1497,7 +1497,39 @@ document.getElementById('btn-format-done')!.addEventListener('click', async () =
   showScreen('drive-select');
 });
 
+// ── Zoom ──────────────────────────────────────────────────────────────────────
+
+const ZOOM_STEP = 0.1;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3.0;
+const ZOOM_DEFAULT = 1.5;
+
+let zoomLevel: number = parseFloat(localStorage.getItem('zoom') ?? String(ZOOM_DEFAULT));
+
+function applyZoom() {
+  document.documentElement.style.zoom = String(zoomLevel);
+  localStorage.setItem('zoom', String(zoomLevel));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!e.ctrlKey) return;
+  if (e.key === '=' || e.key === '+') {
+    e.preventDefault();
+    zoomLevel = Math.min(ZOOM_MAX, Math.round((zoomLevel + ZOOM_STEP) * 100) / 100);
+    applyZoom();
+  } else if (e.key === '-') {
+    e.preventDefault();
+    zoomLevel = Math.max(ZOOM_MIN, Math.round((zoomLevel - ZOOM_STEP) * 100) / 100);
+    applyZoom();
+  } else if (e.key === '0') {
+    e.preventDefault();
+    zoomLevel = ZOOM_DEFAULT;
+    applyZoom();
+  }
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+applyZoom();
 showScreen('drive-select');
 refreshDrives();
