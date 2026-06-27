@@ -291,6 +291,7 @@ async function openSelectedDrive(): Promise<void> {
       (document.getElementById('password-input') as HTMLInputElement).value = '';
       setError('password-error', '');
       showScreen('password');
+      (document.getElementById('password-input') as HTMLInputElement).focus();
     } else if (result.mounted) {
       enterConfig(result.mounted.mount_point, result.mounted.config);
     }
