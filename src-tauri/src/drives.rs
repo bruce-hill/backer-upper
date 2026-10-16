@@ -83,7 +83,10 @@ pub fn list_removable_drives() -> Result<Vec<Drive>> {
 }
 
 fn str_field(dev: &serde_json::Value, key: &str) -> Option<String> {
-    dev[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+    dev[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 fn is_hotplug(dev: &serde_json::Value) -> bool {
@@ -174,7 +177,13 @@ pub fn udisks2_obj_path(device: &str) -> String {
     let name = resolved.strip_prefix("/dev/").unwrap_or(&resolved);
     let encoded: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("/org/freedesktop/UDisks2/block_devices/{encoded}")
 }
@@ -232,11 +241,17 @@ pub fn doas_mount(device: &str) -> Result<PathBuf> {
     }
 
     // mkfs creates the filesystem root owned by root; fix it so the user can write.
-    let uid = Command::new("id").arg("-u").output().ok()
+    let uid = Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_owned())
         .unwrap_or_default();
-    let gid = Command::new("id").arg("-g").output().ok()
+    let gid = Command::new("id")
+        .arg("-g")
+        .output()
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_owned())
         .unwrap_or_default();
@@ -310,7 +325,14 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
     }
 
     let mut child = Command::new("doas")
-        .args(["cryptsetup", "luksOpen", "--key-file", "-", device, LUKS_MAPPER])
+        .args([
+            "cryptsetup",
+            "luksOpen",
+            "--key-file",
+            "-",
+            device,
+            LUKS_MAPPER,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

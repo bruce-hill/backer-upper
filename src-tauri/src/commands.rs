@@ -4,10 +4,13 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::State;
 
-use crate::backup::{format_duration, list_snapshot_names, rsync_command_string, rsync_restore_args, run_backup, run_restore, BackupProgress};
+use crate::backup::{
+    BackupProgress, format_duration, list_snapshot_names, rsync_command_string, rsync_restore_args,
+    run_backup, run_restore,
+};
 use crate::config::{Config, SyncJob};
 use crate::drives::{self, Drive};
-use crate::format::{probe_drive, run_format, DriveInfo, FormatProgress};
+use crate::format::{DriveInfo, FormatProgress, probe_drive, run_format};
 use crate::state::AppState;
 use crate::wipe::{self, WipeProgress};
 
@@ -138,8 +141,20 @@ pub async fn open_drive(
     .await
     {
         Ok(Ok(d)) => d,
-        Ok(Err(e)) => return Ok(OpenResult { needs_password: false, mounted: None, error: Some(e) }),
-        Err(e) => return Ok(OpenResult { needs_password: false, mounted: None, error: Some(e.to_string()) }),
+        Ok(Err(e)) => {
+            return Ok(OpenResult {
+                needs_password: false,
+                mounted: None,
+                error: Some(e),
+            });
+        }
+        Err(e) => {
+            return Ok(OpenResult {
+                needs_password: false,
+                mounted: None,
+                error: Some(e.to_string()),
+            });
+        }
     };
 
     if drive.is_mounted() {
@@ -157,13 +172,20 @@ pub async fn open_drive(
         s.config_dirty = false;
         return Ok(OpenResult {
             needs_password: false,
-            mounted: Some(MountResult { mount_point: mp.display().to_string(), config }),
+            mounted: Some(MountResult {
+                mount_point: mp.display().to_string(),
+                config,
+            }),
             error: None,
         });
     }
 
     if drive.is_encrypted {
-        return Ok(OpenResult { needs_password: true, mounted: None, error: None });
+        return Ok(OpenResult {
+            needs_password: true,
+            mounted: None,
+            error: None,
+        });
     }
 
     let dev = drive.device.clone();
@@ -177,7 +199,10 @@ pub async fn open_drive(
             s.config_dirty = false;
             Ok(OpenResult {
                 needs_password: false,
-                mounted: Some(MountResult { mount_point: mp.display().to_string(), config }),
+                mounted: Some(MountResult {
+                    mount_point: mp.display().to_string(),
+                    config,
+                }),
                 error: None,
             })
         }
@@ -186,7 +211,11 @@ pub async fn open_drive(
             mounted: None,
             error: Some(format!("Mount failed: {e}")),
         }),
-        Err(e) => Ok(OpenResult { needs_password: false, mounted: None, error: Some(e.to_string()) }),
+        Err(e) => Ok(OpenResult {
+            needs_password: false,
+            mounted: None,
+            error: Some(e.to_string()),
+        }),
     }
 }
 
@@ -210,7 +239,10 @@ pub async fn unlock_drive(
     s.mount_point = Some(mp.clone());
     s.config = Some(config.clone());
     s.config_dirty = false;
-    Ok(MountResult { mount_point: mp.display().to_string(), config })
+    Ok(MountResult {
+        mount_point: mp.display().to_string(),
+        config,
+    })
 }
 
 #[tauri::command]
@@ -279,7 +311,12 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let (mapper_name, mounted_device, mount_point, child_pid) = {
         let s = state.lock().unwrap();
         let pid = s.progress.lock().unwrap().child_pid;
-        (s.mapper_name.clone(), s.mounted_device.clone(), s.mount_point.clone(), pid)
+        (
+            s.mapper_name.clone(),
+            s.mounted_device.clone(),
+            s.mount_point.clone(),
+            pid,
+        )
     };
 
     // Stop any running backup/restore before unmounting.
@@ -290,7 +327,9 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
         p.finished = true;
         drop(p);
         drop(s);
-        let _ = std::process::Command::new("kill").args([&pid.to_string()]).status();
+        let _ = std::process::Command::new("kill")
+            .args([&pid.to_string()])
+            .status();
     }
 
     // Cancel any running wipe so the thread stops writing before unmount.
@@ -305,18 +344,21 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
         let result = match (&mapper_name, &mounted_device) {
             (Some(cleartext_dev), Some(luks_dev)) => {
                 let unmount = if cleartext_dev.starts_with("/dev/mapper/") {
-                    mount_point.as_ref()
+                    mount_point
+                        .as_ref()
                         .map(|mp| drives::doas_unmount(mp))
                         .unwrap_or_else(|| drives::udisksctl_unmount(cleartext_dev))
                 } else {
                     drives::udisksctl_unmount(cleartext_dev)
                 };
-                unmount.and_then(|()| if cleartext_dev.starts_with("/dev/mapper/") {
-                    drives::doas_luks_close()
-                } else {
-                    drives::udisksctl_lock(luks_dev)
+                unmount.and_then(|()| {
+                    if cleartext_dev.starts_with("/dev/mapper/") {
+                        drives::doas_luks_close()
+                    } else {
+                        drives::udisksctl_lock(luks_dev)
+                    }
                 })
-            },
+            }
             (None, Some(dev)) => drives::udisksctl_unmount(dev),
             _ => Ok(()),
         };
@@ -349,8 +391,7 @@ pub async fn eject(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
 pub async fn unmount_device(device: String, luks_parent: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = if let Some(ref luks_dev) = luks_parent {
-            drives::udisksctl_unmount(&device)
-                .and_then(|()| drives::udisksctl_lock(luks_dev))
+            drives::udisksctl_unmount(&device).and_then(|()| drives::udisksctl_lock(luks_dev))
         } else {
             drives::udisksctl_unmount(&device)
         };
@@ -599,7 +640,9 @@ pub fn start_format(
         s.format_running = true;
         std::sync::Arc::clone(&s.format_progress)
     };
-    run_format(device, is_disk, label, fstype, encrypt, passphrase, progress);
+    run_format(
+        device, is_disk, label, fstype, encrypt, passphrase, progress,
+    );
     Ok(())
 }
 
@@ -675,7 +718,9 @@ pub async fn preview_restore(
         .iter()
         .zip(subpaths.into_iter())
         .filter_map(|(&i, sub)| {
-            cfg.jobs.get(i).map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
+            cfg.jobs
+                .get(i)
+                .map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
         })
         .collect();
 
@@ -691,7 +736,13 @@ pub async fn preview_restore(
         }
         let mut all_lines = Vec::new();
         for (job, subpath) in &job_pairs {
-            let mut args = rsync_restore_args(job, &mp, snapshot.as_deref(), delete_extra, subpath.as_deref());
+            let mut args = rsync_restore_args(
+                job,
+                &mp,
+                snapshot.as_deref(),
+                delete_extra,
+                subpath.as_deref(),
+            );
             args.push("--dry-run".to_owned());
             args.push("--stats".to_owned());
             all_lines.push(format!(">>> [{}] dry-run", job.name));
@@ -762,7 +813,9 @@ pub fn start_restore(
         .iter()
         .zip(subpaths.into_iter())
         .filter_map(|(&i, sub)| {
-            cfg.jobs.get(i).map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
+            cfg.jobs
+                .get(i)
+                .map(|j| (j.clone(), if sub.is_empty() { None } else { Some(sub) }))
         })
         .unzip();
 
@@ -794,7 +847,11 @@ fn validate_subpath(sub: &str) -> Result<(), String> {
     for comp in Path::new(sub).components() {
         match comp {
             Component::Normal(_) => {}
-            _ => return Err(format!("Invalid subpath \"{sub}\": must use only plain directory names (no '..', '/', or leading '.')")),
+            _ => {
+                return Err(format!(
+                    "Invalid subpath \"{sub}\": must use only plain directory names (no '..', '/', or leading '.')"
+                ));
+            }
         }
     }
     Ok(())
@@ -803,8 +860,7 @@ fn validate_subpath(sub: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let rd = std::fs::read_dir(&path)
-            .map_err(|e| format!("Cannot read {}: {}", path, e))?;
+        let rd = std::fs::read_dir(&path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
 
         let mut entries: Vec<(String, bool)> = Vec::new();
         for entry in rd {
@@ -812,7 +868,9 @@ pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let ft = entry.file_type().map_err(|e| e.to_string())?;
             let is_dir = if ft.is_symlink() {
-                std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false)
+                std::fs::metadata(entry.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
             } else {
                 ft.is_dir()
             };

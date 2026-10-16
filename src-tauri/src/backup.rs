@@ -80,7 +80,13 @@ pub fn list_snapshot_names(drive_root: &Path) -> Vec<String> {
     names
 }
 
-pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&str>, delete_extra: bool, subpath: Option<&str>) -> Vec<String> {
+pub fn rsync_restore_args(
+    job: &SyncJob,
+    drive_root: &Path,
+    snapshot: Option<&str>,
+    delete_extra: bool,
+    subpath: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-av".to_owned(),
         "--info=progress2".to_owned(),
@@ -91,7 +97,10 @@ pub fn rsync_restore_args(job: &SyncJob, drive_root: &Path, snapshot: Option<&st
         args.push("--delete".to_owned());
     }
     let mut src_dir = match snapshot {
-        Some(snap) => drive_root.join("snapshots").join(snap).join(&job.destination),
+        Some(snap) => drive_root
+            .join("snapshots")
+            .join(snap)
+            .join(&job.destination),
         None => drive_root.join(&job.destination),
     };
     let mut dst_dir = job.source.clone();
@@ -142,7 +151,13 @@ pub fn run_restore(
                 p.current_file.clear();
             }
 
-            let args = rsync_restore_args(job, &drive_root, snapshot.as_deref(), delete_extra, subpath.as_deref());
+            let args = rsync_restore_args(
+                job,
+                &drive_root,
+                snapshot.as_deref(),
+                delete_extra,
+                subpath.as_deref(),
+            );
             let mut child = match Command::new("rsync")
                 .args(&args)
                 .stdout(Stdio::piped())
@@ -237,7 +252,9 @@ const CACHEDIR_TAG_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806b
 
 fn is_valid_cachedir_tag(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
     let mut buf = [0u8; 43];
     matches!(f.read_exact(&mut buf), Ok(())) && buf == CACHEDIR_TAG_SIGNATURE
 }
@@ -254,7 +271,9 @@ pub fn find_cache_dirs(source: &Path) -> Vec<PathBuf> {
             }
             continue;
         }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             // file_type() does not follow symlinks, so symlinked dirs are skipped (as rsync -a does).
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -284,7 +303,11 @@ pub fn cache_dir_rules(cache_dirs: &[PathBuf]) -> Vec<String> {
     let mut rules = Vec::new();
     for dir in cache_dirs {
         let rel = rsync_escape_pattern(&dir.to_string_lossy());
-        let prefix = if rel.is_empty() { String::new() } else { format!("/{rel}") };
+        let prefix = if rel.is_empty() {
+            String::new()
+        } else {
+            format!("/{rel}")
+        };
         rules.push(format!("--include={prefix}/CACHEDIR.TAG"));
         rules.push(format!("--exclude={prefix}/*"));
     }
@@ -326,7 +349,25 @@ pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
 fn shell_quote(s: &str) -> String {
     if s.contains(|c: char| {
         c.is_whitespace()
-            || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '(' | ')' | '&' | '|' | ';' | '<' | '>' | '!' | '#' | '~' | '*' | '?')
+            || matches!(
+                c,
+                '"' | '\''
+                    | '\\'
+                    | '$'
+                    | '`'
+                    | '('
+                    | ')'
+                    | '&'
+                    | '|'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '!'
+                    | '#'
+                    | '~'
+                    | '*'
+                    | '?'
+            )
     }) {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
@@ -519,7 +560,8 @@ pub fn run_backup(
 
         match snap_output {
             Err(e) => {
-                p.log_lines.push(format!("Warning: btrfs snapshot failed: {e}"));
+                p.log_lines
+                    .push(format!("Warning: btrfs snapshot failed: {e}"));
             }
             Ok(out) if !out.status.success() => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -530,10 +572,15 @@ pub fn run_backup(
                         out.status.code().unwrap_or(-1)
                     ));
                 } else {
-                    p.log_lines.push(format!("Warning: btrfs snapshot failed: {stderr}"));
+                    p.log_lines
+                        .push(format!("Warning: btrfs snapshot failed: {stderr}"));
                 }
                 if let Ok(mnt) = Command::new("findmnt")
-                    .args(["--output=TARGET,OPTIONS", "--target", drive_root.to_str().unwrap_or(".")])
+                    .args([
+                        "--output=TARGET,OPTIONS",
+                        "--target",
+                        drive_root.to_str().unwrap_or("."),
+                    ])
                     .output()
                 {
                     let out = String::from_utf8_lossy(&mnt.stdout);
@@ -543,7 +590,12 @@ pub fn run_backup(
                     }
                 }
                 if let Ok(sv) = Command::new("doas")
-                    .args(["btrfs", "subvolume", "show", drive_root.to_str().unwrap_or(".")])
+                    .args([
+                        "btrfs",
+                        "subvolume",
+                        "show",
+                        drive_root.to_str().unwrap_or("."),
+                    ])
                     .output()
                 {
                     let out = String::from_utf8_lossy(&sv.stdout);
@@ -553,7 +605,8 @@ pub fn run_backup(
                 }
             }
             Ok(_) => {
-                p.log_lines.push(format!("Snapshot created: {snapshot_name}"));
+                p.log_lines
+                    .push(format!("Snapshot created: {snapshot_name}"));
             }
         }
     })
@@ -578,9 +631,7 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
             if parts.len() >= 2 {
                 let bytes_str = parts[parts.len() - 2].replace(',', "");
                 let pct_str = parts[parts.len() - 1];
-                if let (Ok(bytes), Ok(pct)) =
-                    (bytes_str.parse::<u64>(), pct_str.parse::<f64>())
-                {
+                if let (Ok(bytes), Ok(pct)) = (bytes_str.parse::<u64>(), pct_str.parse::<f64>()) {
                     let mut p = progress.lock().unwrap();
                     p.bytes_transferred = bytes;
                     if pct > 0.0 {
@@ -640,7 +691,11 @@ mod tests {
         std::fs::create_dir_all(tmp.join("a/cache/inner")).unwrap();
         std::fs::create_dir_all(tmp.join("b/fake")).unwrap();
         std::fs::write(tmp.join("a/cache/CACHEDIR.TAG"), CACHEDIR_TAG_SIGNATURE).unwrap();
-        std::fs::write(tmp.join("a/cache/inner/CACHEDIR.TAG"), CACHEDIR_TAG_SIGNATURE).unwrap();
+        std::fs::write(
+            tmp.join("a/cache/inner/CACHEDIR.TAG"),
+            CACHEDIR_TAG_SIGNATURE,
+        )
+        .unwrap();
         std::fs::write(tmp.join("b/fake/CACHEDIR.TAG"), b"not a real tag").unwrap();
 
         let found = find_cache_dirs(&tmp);

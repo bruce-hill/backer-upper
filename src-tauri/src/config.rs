@@ -86,8 +86,7 @@ impl Config {
     pub fn save(&self, drive_root: &Path) -> Result<()> {
         let path = drive_root.join(CONFIG_FILENAME);
         let text = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(&path, text)
-            .with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 }

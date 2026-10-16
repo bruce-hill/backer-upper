@@ -145,7 +145,10 @@ function getExcludeTextarea(): HTMLTextAreaElement {
 }
 
 function getTextareaLines(): string[] {
-  return getExcludeTextarea().value.split('\n').map((s) => s.trim()).filter(Boolean);
+  return getExcludeTextarea()
+    .value.split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function getTextareaExcludedPaths(): Set<string> {
@@ -258,7 +261,8 @@ function renderDriveList(): void {
     el.innerHTML = drives
       .map((d, i) => {
         const badges: string[] = [];
-        if (d.tran) badges.push(`<span class="badge badge-usb">${escHtml(d.tran.toUpperCase())}</span>`);
+        if (d.tran)
+          badges.push(`<span class="badge badge-usb">${escHtml(d.tran.toUpperCase())}</span>`);
         if (d.fstype && d.fstype !== 'crypto_LUKS')
           badges.push(`<span class="badge badge-fs">${escHtml(d.fstype)}</span>`);
         if (d.is_encrypted) badges.push('<span class="badge badge-luks">LUKS</span>');
@@ -399,8 +403,9 @@ async function refreshConfigView(): Promise<void> {
     renderJobsTable(status.config.jobs);
     const dirty = status.config_dirty;
     (document.getElementById('btn-save-config') as HTMLElement).style.display = dirty ? '' : 'none';
-    (document.getElementById('unsaved-indicator') as HTMLElement).style.display =
-      dirty ? '' : 'none';
+    (document.getElementById('unsaved-indicator') as HTMLElement).style.display = dirty
+      ? ''
+      : 'none';
   }
 }
 
@@ -426,7 +431,9 @@ function isEffectivelyExcluded(path: string, excludedPaths: Set<string>): boolea
 
 function hasExcludedDescendant(node: TreeNode, excludedPaths: Set<string>): boolean {
   if (!node.children) return false;
-  return node.children.some((c) => excludedPaths.has(c.path) || hasExcludedDescendant(c, excludedPaths));
+  return node.children.some(
+    (c) => excludedPaths.has(c.path) || hasExcludedDescendant(c, excludedPaths)
+  );
 }
 
 function toggleTreeNode(path: string): void {
@@ -722,8 +729,11 @@ async function saveJob(): Promise<void> {
   await invoke('save_config');
   const newStatus = await invoke<AppStatus>('get_status');
   enterConfig(newStatus.mount_point!, newStatus.config!);
-  (document.getElementById('btn-save-config') as HTMLElement).style.display = newStatus.config_dirty ? '' : 'none';
-  (document.getElementById('unsaved-indicator') as HTMLElement).style.display = newStatus.config_dirty ? '' : 'none';
+  (document.getElementById('btn-save-config') as HTMLElement).style.display = newStatus.config_dirty
+    ? ''
+    : 'none';
+  (document.getElementById('unsaved-indicator') as HTMLElement).style.display =
+    newStatus.config_dirty ? '' : 'none';
 }
 
 async function deleteJob(): Promise<void> {
@@ -732,10 +742,16 @@ async function deleteJob(): Promise<void> {
     await invoke<BackupConfig>('delete_job', { idx: editingJobIdx });
     await invoke('save_config');
     const status = await invoke<AppStatus>('get_status');
-    if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
+    if (!status.mount_point || !status.config) {
+      showScreen('drive-select');
+      return;
+    }
     enterConfig(status.mount_point, status.config);
-    (document.getElementById('btn-save-config') as HTMLElement).style.display = status.config_dirty ? '' : 'none';
-    (document.getElementById('unsaved-indicator') as HTMLElement).style.display = status.config_dirty ? '' : 'none';
+    (document.getElementById('btn-save-config') as HTMLElement).style.display = status.config_dirty
+      ? ''
+      : 'none';
+    (document.getElementById('unsaved-indicator') as HTMLElement).style.display =
+      status.config_dirty ? '' : 'none';
   } catch (e) {
     alert('Delete failed: ' + e);
   }
@@ -757,7 +773,10 @@ async function ejectDrive(): Promise<void> {
   const btn = document.getElementById('btn-eject') as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   setStatusBar('Ejecting…', true);
-  if (wipePollId) { clearInterval(wipePollId); wipePollId = null; }
+  if (wipePollId) {
+    clearInterval(wipePollId);
+    wipePollId = null;
+  }
   try {
     await invoke('eject');
     selectedDevice = null;
@@ -911,7 +930,8 @@ function updateBackupUI(p: BackupProgress): void {
   if (!p.running && (p.finished || p.cancelled || p.error)) {
     const btnRow = document.getElementById('backup-btn-row')!;
     const restoreAgainBtn = operationIsRestore
-      ? `<button onclick="goToRestore()">↺ Restore Again</button>` : '';
+      ? `<button onclick="goToRestore()">↺ Restore Again</button>`
+      : '';
     btnRow.innerHTML = `
       ${restoreAgainBtn}
       <button onclick="showConfigFromBackup()">← Back to Config</button>
@@ -930,7 +950,10 @@ function setProgressBar(fraction: number, error: boolean, done: boolean): void {
 
 async function showConfigFromBackup(): Promise<void> {
   const status = await invoke<AppStatus>('get_status');
-  if (!status.mount_point || !status.config) { showScreen('drive-select'); return; }
+  if (!status.mount_point || !status.config) {
+    showScreen('drive-select');
+    return;
+  }
   enterConfig(status.mount_point, status.config);
 }
 
@@ -945,14 +968,19 @@ async function goToRestore(): Promise<void> {
 
   const snapshotEl = document.getElementById('restore-snapshot-list')!;
   if (snapshots.length === 0) {
-    snapshotEl.innerHTML = '<p class="muted">No snapshots available yet — complete a backup first to create one.</p>';
+    snapshotEl.innerHTML =
+      '<p class="muted">No snapshots available yet — complete a backup first to create one.</p>';
   } else {
-    snapshotEl.innerHTML = snapshots.slice().reverse()
-      .map((s, i) => `
+    snapshotEl.innerHTML = snapshots
+      .slice()
+      .reverse()
+      .map(
+        (s, i) => `
       <label class="radio-option">
         <input type="radio" name="restore-snapshot" value="${escHtml(s)}" ${i === 0 ? 'checked' : ''} />
         <span>${snapshotLabel(s)}</span>
-      </label>`)
+      </label>`
+      )
       .join('');
   }
 
@@ -992,7 +1020,8 @@ async function goToRestore(): Promise<void> {
 
 function validateRestore(): void {
   const confirm = (document.getElementById('restore-confirm-input') as HTMLInputElement).value;
-  const hasSnapshot = document.querySelector<HTMLInputElement>('input[name="restore-snapshot"]:checked') !== null;
+  const hasSnapshot =
+    document.querySelector<HTMLInputElement>('input[name="restore-snapshot"]:checked') !== null;
   const hasJobs = Array.from(
     document.querySelectorAll<HTMLInputElement>('.restore-job-check')
   ).some((cb) => cb.checked);
@@ -1007,7 +1036,9 @@ function validateRestore(): void {
   }
 
   (document.getElementById('btn-do-restore') as HTMLButtonElement).disabled = !(
-    confirm === 'RESTORE' && hasSnapshot && hasJobs
+    confirm === 'RESTORE' &&
+    hasSnapshot &&
+    hasJobs
   );
 }
 
@@ -1022,10 +1053,13 @@ async function goToRestorePreview(): Promise<void> {
     .filter((cb) => cb.checked)
     .map((cb) => parseInt(cb.dataset.idx!, 10));
   pendingRestoreSubpaths = pendingRestoreJobIndices.map((idx) => {
-    const input = document.querySelector<HTMLInputElement>(`.restore-job-subpath-input[data-idx="${idx}"]`);
+    const input = document.querySelector<HTMLInputElement>(
+      `.restore-job-subpath-input[data-idx="${idx}"]`
+    );
     return input?.value.trim() ?? '';
   });
-  pendingRestoreDeleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement).checked;
+  pendingRestoreDeleteExtra = (document.getElementById('restore-delete-extra') as HTMLInputElement)
+    .checked;
 
   const btn = document.getElementById('btn-do-restore') as HTMLButtonElement;
   btn.disabled = true;
@@ -1089,7 +1123,11 @@ async function doRestore(): Promise<void> {
 
 // ── Format Setup screen ───────────────────────────────────────────────────────
 
-async function enterFormatSetup(device: string, fstype: string | undefined, isDisk: boolean): Promise<void> {
+async function enterFormatSetup(
+  device: string,
+  fstype: string | undefined,
+  isDisk: boolean
+): Promise<void> {
   formatDevice = device;
   formatIsDisk = isDisk;
 
@@ -1128,7 +1166,7 @@ function buildFormatCmdPreview(device: string, isDisk: boolean): void {
       document.getElementById('format-cmd-preview')!.innerHTML = lines
         .map((l) => `<div>${escHtml(l)}</div>`)
         .join('');
-    },
+    }
   );
 }
 
@@ -1163,7 +1201,9 @@ function validateFormat(): void {
   const luks = (document.getElementById('format-luks') as HTMLInputElement).checked;
   const p1 = (document.getElementById('format-pass1') as HTMLInputElement).value;
   const p2 = (document.getElementById('format-pass2') as HTMLInputElement).value;
-  const confirm = (document.getElementById('format-confirm-input') as HTMLInputElement).value.trim();
+  const confirm = (
+    document.getElementById('format-confirm-input') as HTMLInputElement
+  ).value.trim();
 
   let msg = '';
   if (luks && p2 && p1 !== p2) msg = 'Passphrases do not match.';
@@ -1284,9 +1324,9 @@ async function startWipe(): Promise<void> {
   document.getElementById('wipe-progress-label')!.textContent = '0%';
   document.getElementById('wipe-btn-row')!.innerHTML =
     '<button id="btn-wipe-cancel">Cancel</button>';
-  document.getElementById('btn-wipe-cancel')!.addEventListener('click', () =>
-    invoke('cancel_wipe'),
-  );
+  document
+    .getElementById('btn-wipe-cancel')!
+    .addEventListener('click', () => invoke('cancel_wipe'));
   if (wipePollId) clearInterval(wipePollId);
   wipePollId = setInterval(pollWipe, 500);
 }
@@ -1358,13 +1398,26 @@ function parseSnapshotDate(name: string): Date | null {
 }
 
 function formatSnapshotDate(date: Date): string {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
   const mon = months[date.getMonth()];
   const day = date.getDate();
   const hh = date.getHours().toString().padStart(2, '0');
   const mm = date.getMinutes().toString().padStart(2, '0');
-  const yearSuffix = date.getFullYear() !== new Date().getFullYear()
-    ? ` ${date.getFullYear()}` : '';
+  const yearSuffix =
+    date.getFullYear() !== new Date().getFullYear() ? ` ${date.getFullYear()}` : '';
   return `${mon} ${day}${yearSuffix} at ${hh}:${mm}`;
 }
 
@@ -1375,17 +1428,19 @@ function relativeTime(date: Date): string {
   const days = Math.floor(hours / 24);
   const months = Math.floor(days / 30);
   if (months > 0) return `${months} month${months === 1 ? '' : 's'} ago`;
-  if (days > 0)   return `${days} day${days === 1 ? '' : 's'} ago`;
-  if (hours > 0)  return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  if (mins > 0)   return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  if (days > 0) return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (hours > 0) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (mins > 0) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
   return 'just now';
 }
 
 function snapshotLabel(name: string): string {
   const date = parseSnapshotDate(name);
   if (!date) return escHtml(name);
-  return `<strong>${escHtml(formatSnapshotDate(date))}</strong>`
-    + ` <span class="radio-desc">${escHtml(relativeTime(date))} · ${escHtml(name)}</span>`;
+  return (
+    `<strong>${escHtml(formatSnapshotDate(date))}</strong>` +
+    ` <span class="radio-desc">${escHtml(relativeTime(date))} · ${escHtml(name)}</span>`
+  );
 }
 
 function escHtml(s: unknown): string {
@@ -1467,7 +1522,9 @@ document.getElementById('btn-restore-cancel')!.addEventListener('click', async (
 document.getElementById('screen-restore')!.addEventListener('input', validateRestore);
 document.getElementById('btn-do-restore')!.addEventListener('click', goToRestorePreview);
 
-document.getElementById('btn-restore-preview-back')!.addEventListener('click', () => showScreen('restore'));
+document
+  .getElementById('btn-restore-preview-back')!
+  .addEventListener('click', () => showScreen('restore'));
 document.getElementById('btn-restore-preview-proceed')!.addEventListener('click', doRestore);
 
 document.getElementById('btn-preview-cancel')!.addEventListener('click', async () => {

@@ -235,7 +235,10 @@ fn validate_device(device: &str, is_disk: bool, progress: &SharedFormatProgress)
     if !meta.file_type().is_block_device() {
         anyhow::bail!("{device} is not a block device");
     }
-    log(progress, &format!("✓ {device} exists and is a block device"));
+    log(
+        progress,
+        &format!("✓ {device} exists and is a block device"),
+    );
 
     let lsblk_out = Command::new("lsblk")
         .args(["-J", "-o", "HOTPLUG,RM,TYPE", device])
@@ -297,28 +300,62 @@ struct FormatStep {
 
 enum FormatAction {
     Advance(String),
-    Doas { args: Vec<String>, needs_passphrase: bool, is_cleanup: bool },
+    Doas {
+        args: Vec<String>,
+        needs_passphrase: bool,
+        is_cleanup: bool,
+    },
     WaitForDevice(String),
     CheckDevice(String),
 }
 
 fn doas_step(args: &[&str]) -> FormatStep {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: false, is_cleanup: false } }
+    FormatStep {
+        preview: Some(format!("doas {}", args.join(" "))),
+        action: FormatAction::Doas {
+            args,
+            needs_passphrase: false,
+            is_cleanup: false,
+        },
+    }
 }
 
 fn doas_passphrase_step(args: &[&str]) -> FormatStep {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: true, is_cleanup: false } }
+    FormatStep {
+        preview: Some(format!("doas {}", args.join(" "))),
+        action: FormatAction::Doas {
+            args,
+            needs_passphrase: true,
+            is_cleanup: false,
+        },
+    }
 }
 
 fn doas_cleanup_step(args: &[&str]) -> FormatStep {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    FormatStep { preview: Some(format!("doas {}", args.join(" "))), action: FormatAction::Doas { args, needs_passphrase: false, is_cleanup: true } }
+    FormatStep {
+        preview: Some(format!("doas {}", args.join(" "))),
+        action: FormatAction::Doas {
+            args,
+            needs_passphrase: false,
+            is_cleanup: true,
+        },
+    }
 }
 
-fn build_format_steps(device: &str, is_disk: bool, label: &str, fstype: &str, encrypt: bool) -> Vec<FormatStep> {
-    let no_preview = |action| FormatStep { preview: None, action };
+fn build_format_steps(
+    device: &str,
+    is_disk: bool,
+    label: &str,
+    fstype: &str,
+    encrypt: bool,
+) -> Vec<FormatStep> {
+    let no_preview = |action| FormatStep {
+        preview: None,
+        action,
+    };
     let mapper = "backer-upper-format";
     let mapper_dev = format!("/dev/mapper/{mapper}");
     let mkfs_cmd = format!("mkfs.{fstype}");
@@ -329,21 +366,45 @@ fn build_format_steps(device: &str, is_disk: bool, label: &str, fstype: &str, en
         let part = crate::drives::partition_path(device);
         steps.push(no_preview(FormatAction::Advance("Clearing drive".into())));
         steps.push(doas_step(&["wipefs", "-a", device]));
-        steps.push(no_preview(FormatAction::Advance("Creating partition".into())));
-        steps.push(doas_step(&["parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%"]));
+        steps.push(no_preview(FormatAction::Advance(
+            "Creating partition".into(),
+        )));
+        steps.push(doas_step(&[
+            "parted", "-s", device, "mklabel", "gpt", "mkpart", "primary", "0%", "100%",
+        ]));
         steps.push(no_preview(FormatAction::WaitForDevice(part.clone())));
         part
     } else {
-        steps.push(no_preview(FormatAction::Advance("Clearing partition".into())));
+        steps.push(no_preview(FormatAction::Advance(
+            "Clearing partition".into(),
+        )));
         steps.push(doas_step(&["wipefs", "-a", device]));
         device.to_owned()
     };
 
     if encrypt {
-        steps.push(no_preview(FormatAction::Advance("Encrypting with LUKS".into())));
-        steps.push(doas_passphrase_step(&["cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file", "-", &partition]));
+        steps.push(no_preview(FormatAction::Advance(
+            "Encrypting with LUKS".into(),
+        )));
+        steps.push(doas_passphrase_step(&[
+            "cryptsetup",
+            "luksFormat",
+            "--type",
+            "luks2",
+            "--batch-mode",
+            "--key-file",
+            "-",
+            &partition,
+        ]));
         steps.push(no_preview(FormatAction::Advance(format_step_name)));
-        steps.push(doas_passphrase_step(&["cryptsetup", "luksOpen", "--key-file", "-", &partition, mapper]));
+        steps.push(doas_passphrase_step(&[
+            "cryptsetup",
+            "luksOpen",
+            "--key-file",
+            "-",
+            &partition,
+            mapper,
+        ]));
         steps.push(no_preview(FormatAction::CheckDevice(mapper_dev.clone())));
         steps.push(doas_step(&[&mkfs_cmd, "-L", label, &mapper_dev]));
         steps.push(doas_cleanup_step(&["cryptsetup", "luksClose", mapper]));
@@ -355,7 +416,13 @@ fn build_format_steps(device: &str, is_disk: bool, label: &str, fstype: &str, en
     steps
 }
 
-pub fn format_command_preview(device: &str, is_disk: bool, label: &str, fstype: &str, encrypt: bool) -> Vec<String> {
+pub fn format_command_preview(
+    device: &str,
+    is_disk: bool,
+    label: &str,
+    fstype: &str,
+    encrypt: bool,
+) -> Vec<String> {
     build_format_steps(device, is_disk, label, fstype, encrypt)
         .into_iter()
         .filter_map(|step| step.preview)
@@ -390,7 +457,11 @@ fn do_format(
                     advance(progress, &name);
                 }
             }
-            FormatAction::Doas { args, needs_passphrase, is_cleanup } => {
+            FormatAction::Doas {
+                args,
+                needs_passphrase,
+                is_cleanup,
+            } => {
                 if pending_error.is_some() && !is_cleanup {
                     continue;
                 }
@@ -476,10 +547,21 @@ pub fn run_format(
         .count();
     {
         let mut p = progress.lock().unwrap();
-        *p = FormatProgress { total_steps: total, ..Default::default() };
+        *p = FormatProgress {
+            total_steps: total,
+            ..Default::default()
+        };
     }
     std::thread::spawn(move || {
-        match do_format(&device, is_disk, &label, &fstype, encrypt, &passphrase, &progress) {
+        match do_format(
+            &device,
+            is_disk,
+            &label,
+            &fstype,
+            encrypt,
+            &passphrase,
+            &progress,
+        ) {
             Ok(()) => {
                 let mut p = progress.lock().unwrap();
                 p.finished = true;

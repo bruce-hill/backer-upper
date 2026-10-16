@@ -6,8 +6,8 @@ mod format;
 mod state;
 mod wipe;
 
-use std::sync::Mutex;
 use state::AppState;
+use std::sync::Mutex;
 
 fn main() {
     tauri::Builder::default()

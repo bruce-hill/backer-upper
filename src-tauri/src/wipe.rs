@@ -50,8 +50,7 @@ fn do_wipe(drive_root: &Path, progress: &SharedWipeProgress) -> Result<()> {
     let mut bytes_written = 0u64;
 
     {
-        let mut file =
-            std::fs::File::create(&fill_path).context("failed to create fill file")?;
+        let mut file = std::fs::File::create(&fill_path).context("failed to create fill file")?;
 
         loop {
             if progress.lock().unwrap().cancelled {
@@ -83,20 +82,18 @@ pub fn run_wipe(drive_root: PathBuf, progress: SharedWipeProgress) {
         let mut p = progress.lock().unwrap();
         *p = WipeProgress::default();
     }
-    std::thread::spawn(move || {
-        match do_wipe(&drive_root, &progress) {
-            Ok(()) => {
-                let mut p = progress.lock().unwrap();
-                p.finished = true;
-                if !p.cancelled {
-                    p.bytes_written = p.total_bytes;
-                }
+    std::thread::spawn(move || match do_wipe(&drive_root, &progress) {
+        Ok(()) => {
+            let mut p = progress.lock().unwrap();
+            p.finished = true;
+            if !p.cancelled {
+                p.bytes_written = p.total_bytes;
             }
-            Err(e) => {
-                let mut p = progress.lock().unwrap();
-                p.error = Some(e.to_string());
-                p.finished = true;
-            }
+        }
+        Err(e) => {
+            let mut p = progress.lock().unwrap();
+            p.error = Some(e.to_string());
+            p.finished = true;
         }
     });
 }
