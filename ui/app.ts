@@ -40,6 +40,7 @@ interface BackupJob {
   excludes: string[];
   mode: string;
   enabled: boolean;
+  exclude_caches: boolean;
 }
 
 interface BackupConfig {
@@ -681,6 +682,8 @@ async function editJob(idx: number): Promise<void> {
   (document.getElementById('job-source') as HTMLInputElement).value = job?.source || '';
   (document.getElementById('job-dest') as HTMLInputElement).value = job?.destination || '';
   (document.getElementById('job-enabled') as HTMLInputElement).checked = job?.enabled ?? true;
+  (document.getElementById('job-exclude-caches') as HTMLInputElement).checked =
+    job?.exclude_caches ?? true;
   const mode = job?.mode || 'Backup';
   document.querySelectorAll<HTMLInputElement>('input[name="job-mode"]').forEach((r) => {
     r.checked = r.value === mode;
@@ -706,6 +709,7 @@ async function saveJob(): Promise<void> {
     excludes,
     mode: modeEl ? modeEl.value : 'Backup',
     enabled: (document.getElementById('job-enabled') as HTMLInputElement).checked,
+    exclude_caches: (document.getElementById('job-exclude-caches') as HTMLInputElement).checked,
   };
 
   if (editingJobIdx !== null && editingJobIdx < config.jobs.length) {

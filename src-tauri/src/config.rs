@@ -18,6 +18,13 @@ pub struct SyncJob {
     pub excludes: Vec<String>,
     pub mode: SyncMode,
     pub enabled: bool,
+    /// Skip directories tagged with a CACHEDIR.TAG file (Cache Directory Tagging Specification).
+    #[serde(default = "default_true")]
+    pub exclude_caches: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl SyncJob {
@@ -34,6 +41,7 @@ impl SyncJob {
             excludes: Vec::new(),
             mode: SyncMode::Backup,
             enabled: true,
+            exclude_caches: true,
         }
     }
 }

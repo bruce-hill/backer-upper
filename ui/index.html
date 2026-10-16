@@ -120,6 +120,14 @@
             </div>
             <label>Enabled</label>
             <input type="checkbox" id="job-enabled" />
+            <label for="job-exclude-caches">Skip caches</label>
+            <span class="checkbox-with-desc">
+              <input type="checkbox" id="job-exclude-caches" />
+              <span class="radio-desc"
+                >Skip directories marked with a <code>CACHEDIR.TAG</code> file (Cargo, pip, ccache,
+                browsers…)</span
+              >
+            </span>
           </div>
           <div class="excludes-section">
             <div class="excludes-section-header">

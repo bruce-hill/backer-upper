@@ -457,9 +457,19 @@ textarea {
   margin-top: 2px;
   flex-shrink: 0;
 }
-.radio-option .radio-desc {
+.radio-option .radio-desc,
+.checkbox-with-desc .radio-desc {
   font-size: 14px;
   color: var(--text-muted);
+}
+.checkbox-with-desc {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.checkbox-with-desc input {
+  margin-top: 3px;
+  flex-shrink: 0;
 }
 
 /* Jobs table */

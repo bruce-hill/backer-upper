@@ -232,7 +232,66 @@ pub fn run_restore(
     })
 }
 
-pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
+/// Signature that must begin a CACHEDIR.TAG file, per the Cache Directory Tagging Specification.
+const CACHEDIR_TAG_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+
+fn is_valid_cachedir_tag(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; 43];
+    matches!(f.read_exact(&mut buf), Ok(())) && buf == CACHEDIR_TAG_SIGNATURE
+}
+
+/// Walk `source` (without following symlinks) and return the paths of all directories containing
+/// a valid CACHEDIR.TAG, relative to `source`. Tagged directories are not descended into.
+pub fn find_cache_dirs(source: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![source.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if is_valid_cachedir_tag(&dir.join("CACHEDIR.TAG")) {
+            if let Ok(rel) = dir.strip_prefix(source) {
+                found.push(rel.to_path_buf());
+            }
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            // file_type() does not follow symlinks, so symlinked dirs are skipped (as rsync -a does).
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(entry.path());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Escape rsync pattern metacharacters so a literal path matches only itself.
+fn rsync_escape_pattern(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Filter rules that skip a cache directory's contents while keeping the directory and its tag,
+/// matching GNU tar's `--exclude-caches` behaviour.
+pub fn cache_dir_rules(cache_dirs: &[PathBuf]) -> Vec<String> {
+    let mut rules = Vec::new();
+    for dir in cache_dirs {
+        let rel = rsync_escape_pattern(&dir.to_string_lossy());
+        let prefix = if rel.is_empty() { String::new() } else { format!("/{rel}") };
+        rules.push(format!("--include={prefix}/CACHEDIR.TAG"));
+        rules.push(format!("--exclude={prefix}/*"));
+    }
+    rules
+}
+
+pub fn rsync_args(job: &SyncJob, drive_root: &Path, cache_dirs: &[PathBuf]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-av".to_owned(),
         "--info=progress2".to_owned(),
@@ -245,15 +304,22 @@ pub fn rsync_args(job: &SyncJob, drive_root: &Path) -> Vec<String> {
     for excl in &job.excludes {
         args.push(format!("--exclude={excl}"));
     }
+    args.extend(cache_dir_rules(cache_dirs));
     let dest = drive_root.join(&job.destination);
     args.push(format!("{}/", job.source.display()));
     args.push(format!("{}/", dest.display()));
     args
 }
 
+/// Human-readable command for the preview screen. Cache directories are discovered at run time,
+/// so they are shown as a placeholder rather than scanned here.
 pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
-    let args = rsync_args(job, drive_root);
-    let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    let args = rsync_args(job, drive_root, &[]);
+    let mut quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    if job.exclude_caches {
+        let n = quoted.len() - 2;
+        quoted.insert(n, "[--exclude for each CACHEDIR.TAG directory]".to_owned());
+    }
     format!("rsync {}", quoted.join(" "))
 }
 
@@ -313,7 +379,24 @@ pub fn run_backup(
                 return;
             }
 
-            let args = rsync_args(job, &drive_root);
+            let cache_dirs = if job.exclude_caches {
+                find_cache_dirs(&job.source)
+            } else {
+                vec![]
+            };
+            if !cache_dirs.is_empty() {
+                let mut p = progress.lock().unwrap();
+                p.log_lines.push(format!(
+                    "Skipping {} cache director{} (CACHEDIR.TAG):",
+                    cache_dirs.len(),
+                    if cache_dirs.len() == 1 { "y" } else { "ies" }
+                ));
+                for d in &cache_dirs {
+                    p.log_lines.push(format!("  {}", d.display()));
+                }
+            }
+
+            let args = rsync_args(job, &drive_root, &cache_dirs);
             let mut child = match Command::new("rsync")
                 .args(&args)
                 .stdout(Stdio::piped())
@@ -543,5 +626,34 @@ fn parse_rsync_line(line: &str, progress: &SharedProgress, elapsed: f64) {
     {
         let mut p = progress.lock().unwrap();
         p.current_file = trimmed.to_owned();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_tagged_dirs_and_prunes_them() {
+        let tmp = std::env::temp_dir().join(format!("bu-cachetest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("a/cache/inner")).unwrap();
+        std::fs::create_dir_all(tmp.join("b/fake")).unwrap();
+        std::fs::write(tmp.join("a/cache/CACHEDIR.TAG"), CACHEDIR_TAG_SIGNATURE).unwrap();
+        std::fs::write(tmp.join("a/cache/inner/CACHEDIR.TAG"), CACHEDIR_TAG_SIGNATURE).unwrap();
+        std::fs::write(tmp.join("b/fake/CACHEDIR.TAG"), b"not a real tag").unwrap();
+
+        let found = find_cache_dirs(&tmp);
+        assert_eq!(found, vec![PathBuf::from("a/cache")]);
+        assert_eq!(
+            cache_dir_rules(&found),
+            vec!["--include=/a/cache/CACHEDIR.TAG", "--exclude=/a/cache/*"]
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn escapes_rsync_metacharacters() {
+        assert_eq!(rsync_escape_pattern("x[1]*?"), "x\\[1]\\*\\?");
     }
 }
