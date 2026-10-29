@@ -264,18 +264,6 @@ pub fn doas_mount(device: &str) -> Result<PathBuf> {
     Ok(mp)
 }
 
-pub fn doas_unmount(mountpoint: &PathBuf) -> Result<()> {
-    let out = Command::new("doas")
-        .args(["umount", &mountpoint.to_string_lossy()])
-        .output()
-        .context("doas umount failed")?;
-    if !out.status.success() {
-        anyhow::bail!("umount: {}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    let _ = std::fs::remove_dir(mountpoint);
-    Ok(())
-}
-
 pub fn udisksctl_unmount(device: &str) -> Result<()> {
     let out = Command::new("udisksctl")
         .args(["unmount", "--no-user-interaction", "-b", device])
@@ -317,11 +305,11 @@ const LUKS_MAPPER: &str = "backer-upper";
 pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathBuf)> {
     let cleartext_dev = format!("/dev/mapper/{LUKS_MAPPER}");
 
+    // A previous session may not have closed cleanly (e.g. the drive was
+    // unplugged while mounted). Nothing else uses this mapper name, so tear it down.
     if std::path::Path::new(&cleartext_dev).exists() {
-        anyhow::bail!(
-            "{cleartext_dev} already exists — a previous session may not have closed cleanly.\n\
-             Run: doas cryptsetup luksClose {LUKS_MAPPER}"
-        );
+        close_mapper(LUKS_MAPPER)
+            .context("could not clean up a mapping left by a previous session")?;
     }
 
     let mut child = Command::new("doas")
@@ -369,8 +357,12 @@ pub fn unlock_and_mount(device: &str, passphrase: &str) -> Result<(String, PathB
 }
 
 pub fn doas_luks_close() -> Result<()> {
+    luks_close(LUKS_MAPPER)
+}
+
+fn luks_close(name: &str) -> Result<()> {
     let out = Command::new("doas")
-        .args(["cryptsetup", "luksClose", LUKS_MAPPER])
+        .args(["cryptsetup", "luksClose", name])
         .output()
         .context("failed to spawn: doas cryptsetup luksClose")?;
     if !out.status.success() {
@@ -380,6 +372,88 @@ pub fn doas_luks_close() -> Result<()> {
         );
     }
     Ok(())
+}
+
+// True if every block device underneath /dev/mapper/{name} has disappeared,
+// i.e. the drive was unplugged while the mapping was open.
+fn mapper_backing_gone(name: &str) -> bool {
+    let Ok(dm) = std::fs::canonicalize(format!("/dev/mapper/{name}")) else {
+        return false;
+    };
+    let Some(dm) = dm.file_name() else {
+        return false;
+    };
+    let slaves = PathBuf::from("/sys/block").join(dm).join("slaves");
+    match std::fs::read_dir(&slaves) {
+        // Dangling symlinks fail exists(), so a removed disk counts as gone.
+        Ok(entries) => !entries.flatten().any(|e| e.path().exists()),
+        Err(_) => false,
+    }
+}
+
+fn mountpoints_of(device: &str) -> Vec<PathBuf> {
+    let Ok(out) = Command::new("findmnt")
+        .args(["-J", "-o", "TARGET", "-S", device])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    json["filesystems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|fs| fs["target"].as_str())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Unmount everything mounted from /dev/mapper/{name} and close the mapping.
+/// If the drive was unplugged, the filesystem can't be unmounted cleanly, so
+/// it is detached lazily and the mapping is force-removed.
+pub fn close_mapper(name: &str) -> Result<()> {
+    let dev = format!("/dev/mapper/{name}");
+    let gone = mapper_backing_gone(name);
+    for mp in mountpoints_of(&dev) {
+        let mut args = vec!["umount"];
+        if gone {
+            args.push("-l");
+        }
+        let mp_str = mp.to_string_lossy();
+        args.push(&mp_str);
+        let out = Command::new("doas")
+            .args(&args)
+            .output()
+            .context("doas umount failed")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "umount {}: {}",
+                mp.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let _ = std::fs::remove_dir(&mp);
+    }
+    match luks_close(name) {
+        Ok(()) => Ok(()),
+        Err(_) if gone => {
+            // Swaps in an error target so lingering openers get EIO, then removes it.
+            let out = Command::new("doas")
+                .args(["dmsetup", "remove", "--force", name])
+                .output()
+                .context("failed to spawn: doas dmsetup remove")?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "dmsetup remove failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn partition_path(disk: &str) -> String {

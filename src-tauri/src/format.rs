@@ -280,10 +280,12 @@ fn validate_device(device: &str, is_disk: bool, progress: &SharedFormatProgress)
 
     let mapper_path = "/dev/mapper/backer-upper-format";
     if Path::new(mapper_path).exists() {
-        anyhow::bail!(
-            "SAFETY ABORT: {mapper_path} already exists, likely left open by a previous failed \
-             format attempt. Close it first:\n  doas cryptsetup luksClose backer-upper-format"
+        log(
+            progress,
+            &format!("{mapper_path} left open by a previous format attempt, closing it"),
         );
+        crate::drives::close_mapper("backer-upper-format")
+            .with_context(|| format!("SAFETY ABORT: could not close {mapper_path}"))?;
     }
     log(progress, "✓ Mapper slot is free");
     log(progress, "--- All checks passed, starting format ---");
