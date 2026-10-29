@@ -66,6 +66,92 @@ pub fn format_duration(secs: u64) -> String {
 
 pub type SharedProgress = Arc<Mutex<BackupProgress>>;
 
+/// Remote shell used for remote sources. BatchMode makes ssh fail immediately instead of
+/// waiting on a password or host-key prompt that a GUI app has no terminal to show, and
+/// ConnectTimeout keeps an unreachable host from hanging the job or the file browser.
+pub const RSYNC_RSH: &str = "--rsh=ssh -o BatchMode=yes -o ConnectTimeout=15";
+
+/// The `--rsh` argument to pass for `source`, if it is reached over ssh. Daemon specs
+/// (`rsync://…`, `host::module`) are excluded: with `--rsh` rsync would tunnel them over ssh
+/// instead of connecting to the daemon.
+pub fn rsh_arg(source: &str) -> Option<&'static str> {
+    let daemon = source.starts_with("rsync://")
+        || source
+            .find("::")
+            .is_some_and(|i| !source[..i].contains('/'));
+    (is_remote(source) && !daemon).then_some(RSYNC_RSH)
+}
+
+/// Options needed to reach a remote source: the ssh shell and, if set, the remote rsync command.
+pub fn remote_args(source: &str, rsync_path: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = rsh_arg(source).map(str::to_owned).into_iter().collect();
+    if let Some(path) = rsync_path.map(str::trim).filter(|p| !p.is_empty()) {
+        if is_remote(source) {
+            args.push(format!("--rsync-path={path}"));
+        }
+    }
+    args
+}
+
+const MAX_LOG_LINES: usize = 500;
+
+fn push_log(p: &mut BackupProgress, line: String) {
+    if p.log_lines.len() >= MAX_LOG_LINES {
+        p.log_lines.remove(0);
+    }
+    p.log_lines.push(line);
+}
+
+/// Whether `source` is an rsync remote spec (`host:path`, `user@host:path` or `rsync://…`),
+/// using the same rule as rsync: a colon that appears before any slash.
+pub fn is_remote(source: &str) -> bool {
+    if source.starts_with("rsync://") {
+        return true;
+    }
+    match source.find(':') {
+        Some(colon) => colon > 0 && !source[..colon].contains('/'),
+        None => false,
+    }
+}
+
+/// Append the trailing slash rsync needs to copy a directory's contents. A bare `host:`
+/// (the remote home directory) is left alone, since `host:/` would mean the remote root.
+pub fn dir_arg(path: &str) -> String {
+    if path.ends_with('/') || (is_remote(path) && path.ends_with(':')) {
+        path.to_owned()
+    } else {
+        format!("{path}/")
+    }
+}
+
+/// Join a relative subpath onto a local or remote source path.
+pub fn join_source(source: &str, sub: &str) -> String {
+    if source.ends_with('/') || (is_remote(source) && source.ends_with(':')) {
+        format!("{source}{sub}")
+    } else {
+        format!("{source}/{sub}")
+    }
+}
+
+/// Forward a child's stderr into the log so errors (e.g. ssh failures) are visible. Join the
+/// returned handle before reporting the child's exit status so its last lines are logged first.
+fn log_stderr(
+    child: &mut std::process::Child,
+    progress: &SharedProgress,
+) -> Option<std::thread::JoinHandle<()>> {
+    let stderr = child.stderr.take()?;
+    let progress = Arc::clone(progress);
+    Some(std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { continue };
+            let line = line.trim();
+            if !line.is_empty() {
+                push_log(&mut progress.lock().unwrap(), line.to_owned());
+            }
+        }
+    }))
+}
+
 pub fn list_snapshot_names(drive_root: &Path) -> Vec<String> {
     let snapshots_dir = drive_root.join("snapshots");
     let mut names: Vec<String> = match std::fs::read_dir(&snapshots_dir) {
@@ -103,13 +189,17 @@ pub fn rsync_restore_args(
             .join(&job.destination),
         None => drive_root.join(&job.destination),
     };
-    let mut dst_dir = job.source.clone();
+    let source = job.source.to_string_lossy();
+    args.extend(remote_args(&source, job.remote_rsync_path.as_deref()));
+    let mut dst_dir = source.into_owned();
     if let Some(sub) = subpath.filter(|s| !s.is_empty()) {
         src_dir = src_dir.join(sub);
-        dst_dir = dst_dir.join(sub);
+        dst_dir = join_source(&dst_dir, sub);
     }
+    // End option parsing so a path beginning with '-' is never read as an option.
+    args.push("--".to_owned());
     args.push(format!("{}/", src_dir.display()));
-    args.push(format!("{}/", dst_dir.display()));
+    args.push(dir_arg(&dst_dir));
     args
 }
 
@@ -173,6 +263,7 @@ pub fn run_restore(
             };
 
             progress.lock().unwrap().child_pid = Some(child.id());
+            let stderr_thread = log_stderr(&mut child, &progress);
 
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
@@ -195,15 +286,15 @@ pub fn run_restore(
                     if !display.is_empty() {
                         let mut p = progress.lock().unwrap();
                         p.elapsed_secs = elapsed;
-                        if p.log_lines.len() > 500 {
-                            p.log_lines.remove(0);
-                        }
-                        p.log_lines.push(display);
+                        push_log(&mut p, display);
                     }
                 }
             }
 
             let wait_result = child.wait();
+            if let Some(t) = stderr_thread {
+                let _ = t.join();
+            }
             let cancelled = {
                 let mut p = progress.lock().unwrap();
                 p.child_pid = None;
@@ -328,19 +419,23 @@ pub fn rsync_args(job: &SyncJob, drive_root: &Path, cache_dirs: &[PathBuf]) -> V
         args.push(format!("--exclude={excl}"));
     }
     args.extend(cache_dir_rules(cache_dirs));
+    let source = job.source.to_string_lossy();
+    args.extend(remote_args(&source, job.remote_rsync_path.as_deref()));
     let dest = drive_root.join(&job.destination);
-    args.push(format!("{}/", job.source.display()));
+    // End option parsing so a path beginning with '-' is never read as an option.
+    args.push("--".to_owned());
+    args.push(dir_arg(&source));
     args.push(format!("{}/", dest.display()));
     args
 }
 
 /// Human-readable command for the preview screen. Cache directories are discovered at run time,
-/// so they are shown as a placeholder rather than scanned here.
+/// so they are shown as a placeholder rather than scanned here. Remote sources can't be scanned.
 pub fn rsync_command_string(job: &SyncJob, drive_root: &Path) -> String {
     let args = rsync_args(job, drive_root, &[]);
     let mut quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
-    if job.exclude_caches {
-        let n = quoted.len() - 2;
+    if job.exclude_caches && !is_remote(&job.source.to_string_lossy()) {
+        let n = quoted.len() - 3; // before `--` and the two paths
         quoted.insert(n, "[--exclude for each CACHEDIR.TAG directory]".to_owned());
     }
     format!("rsync {}", quoted.join(" "))
@@ -420,11 +515,18 @@ pub fn run_backup(
                 return;
             }
 
-            let cache_dirs = if job.exclude_caches {
+            let remote = is_remote(&job.source.to_string_lossy());
+            let cache_dirs = if job.exclude_caches && !remote {
                 find_cache_dirs(&job.source)
             } else {
                 vec![]
             };
+            if job.exclude_caches && remote {
+                push_log(
+                    &mut progress.lock().unwrap(),
+                    "Remote source: CACHEDIR.TAG directories are not skipped".to_owned(),
+                );
+            }
             if !cache_dirs.is_empty() {
                 let mut p = progress.lock().unwrap();
                 p.log_lines.push(format!(
@@ -453,6 +555,7 @@ pub fn run_backup(
             };
 
             progress.lock().unwrap().child_pid = Some(child.id());
+            let stderr_thread = log_stderr(&mut child, &progress);
 
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
@@ -475,15 +578,15 @@ pub fn run_backup(
                     if !display.is_empty() {
                         let mut p = progress.lock().unwrap();
                         p.elapsed_secs = elapsed;
-                        if p.log_lines.len() > 500 {
-                            p.log_lines.remove(0);
-                        }
-                        p.log_lines.push(display);
+                        push_log(&mut p, display);
                     }
                 }
             }
 
             let wait_result = child.wait();
+            if let Some(t) = stderr_thread {
+                let _ = t.join();
+            }
             let cancelled = {
                 let mut p = progress.lock().unwrap();
                 p.child_pid = None;
@@ -705,6 +808,44 @@ mod tests {
             vec!["--include=/a/cache/CACHEDIR.TAG", "--exclude=/a/cache/*"]
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detects_remote_sources() {
+        assert!(is_remote("mail.example.com:/var/mail"));
+        assert!(is_remote("me@host:Maildir"));
+        assert!(is_remote("host:"));
+        assert!(is_remote("rsync://host/module"));
+        assert!(!is_remote("/home/me"));
+        assert!(!is_remote("/home/me/a:b"));
+        assert!(!is_remote("./a:b"));
+        assert!(!is_remote(":foo"));
+        assert_eq!(rsh_arg("me@host:Maildir"), Some(RSYNC_RSH));
+        assert_eq!(rsh_arg("rsync://host/module"), None);
+        assert_eq!(rsh_arg("host::module/dir"), None);
+        assert_eq!(rsh_arg("/home/me"), None);
+        let doas = Some("doas -n -u vmail /usr/bin/rsync");
+        assert_eq!(
+            remote_args("me@host:/var/vmail", doas),
+            vec![
+                RSYNC_RSH.to_owned(),
+                "--rsync-path=doas -n -u vmail /usr/bin/rsync".to_owned()
+            ]
+        );
+        assert!(remote_args("/var/vmail", doas).is_empty());
+        assert_eq!(
+            remote_args("host:x", Some("  ")),
+            vec![RSYNC_RSH.to_owned()]
+        );
+    }
+
+    #[test]
+    fn remote_paths_keep_home_relative_meaning() {
+        assert_eq!(dir_arg("host:/var/mail"), "host:/var/mail/");
+        assert_eq!(dir_arg("host:"), "host:");
+        assert_eq!(join_source("host:", "Maildir"), "host:Maildir");
+        assert_eq!(join_source("host:/var/mail", "me"), "host:/var/mail/me");
+        assert_eq!(join_source("/home/me", "x"), "/home/me/x");
     }
 
     #[test]

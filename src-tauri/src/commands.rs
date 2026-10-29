@@ -5,12 +5,13 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::backup::{
-    BackupProgress, format_duration, list_snapshot_names, rsync_command_string, rsync_restore_args,
-    run_backup, run_restore,
+    BackupProgress, dir_arg, format_duration, is_remote, list_snapshot_names, remote_args,
+    rsync_command_string, rsync_restore_args, run_backup, run_restore,
 };
 use crate::config::{Config, SyncJob};
 use crate::drives::{self, Drive};
 use crate::format::{DriveInfo, FormatProgress, probe_drive, run_format};
+use crate::purge::{self, PurgeResult, PurgeTarget};
 use crate::state::AppState;
 use crate::wipe::{self, WipeProgress};
 
@@ -743,8 +744,8 @@ pub async fn preview_restore(
                 delete_extra,
                 subpath.as_deref(),
             );
-            args.push("--dry-run".to_owned());
-            args.push("--stats".to_owned());
+            // Options must precede the `--` that ends the argument list.
+            args.splice(0..0, ["--dry-run".to_owned(), "--stats".to_owned()]);
             all_lines.push(format!(">>> [{}] dry-run", job.name));
             let output = std::process::Command::new("rsync")
                 .args(&args)
@@ -838,6 +839,54 @@ pub fn start_restore(
     Ok(())
 }
 
+/// Mount point and the drive-relative path of `subpath` inside job `job_idx`'s backup.
+fn purge_location(
+    state: &State<'_, Mutex<AppState>>,
+    job_idx: usize,
+    subpath: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let s = state.lock().unwrap();
+    if s.backup_running {
+        return Err("Cannot purge while a backup or restore is running".to_owned());
+    }
+    if s.wipe_running {
+        return Err("Cannot purge while wiping free space".to_owned());
+    }
+    let (Some(cfg), Some(mp)) = (&s.config, &s.mount_point) else {
+        return Err("No config or mount point".to_owned());
+    };
+    let job = cfg.jobs.get(job_idx).ok_or("No such job")?;
+    validate_subpath(subpath)?;
+    let rel = job.destination.join(subpath);
+    purge::validate_rel(&rel)?;
+    Ok((mp.clone(), rel))
+}
+
+#[tauri::command]
+pub async fn find_purge_targets(
+    state: State<'_, Mutex<AppState>>,
+    job_idx: usize,
+    subpath: String,
+) -> Result<Vec<PurgeTarget>, String> {
+    let (mp, rel) = purge_location(&state, job_idx, &subpath)?;
+    tauri::async_runtime::spawn_blocking(move || purge::find_targets(&mp, &rel))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn purge_path(
+    state: State<'_, Mutex<AppState>>,
+    job_idx: usize,
+    subpath: String,
+) -> Result<PurgeResult, String> {
+    let (mp, rel) = purge_location(&state, job_idx, &subpath)?;
+    wipe::cleanup_fill_file(&mp);
+    tauri::async_runtime::spawn_blocking(move || purge::purge(&mp, &rel))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn load_config(mp: &Path) -> Config {
     Config::load(mp).unwrap_or_default()
 }
@@ -858,8 +907,11 @@ fn validate_subpath(sub: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+pub async fn list_dir(path: String, rsync_path: Option<String>) -> Result<Vec<DirEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if is_remote(&path) {
+            return list_remote_dir(&path, rsync_path.as_deref());
+        }
         let rd = std::fs::read_dir(&path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
 
         let mut entries: Vec<(String, bool)> = Vec::new();
@@ -921,6 +973,79 @@ pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// List a remote directory with `rsync --list-only`, which reuses the same ssh access as the backup.
+fn list_remote_dir(path: &str, rsync_path: Option<&str>) -> Result<Vec<DirEntry>, String> {
+    let out = std::process::Command::new("rsync")
+        .arg("--list-only")
+        .args(remote_args(path, rsync_path))
+        .arg("--")
+        .arg(dir_arg(path))
+        .output()
+        .map_err(|e| format!("failed to run rsync: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Cannot read {path}: {}", stderr.trim()));
+    }
+    let mut entries: Vec<DirEntry> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_list_only_line)
+        .collect();
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    Ok(entries)
+}
+
+/// Parse a line like `-rw-r--r--      1,234 2026/10/22 10:31:00 name with spaces`.
+fn parse_list_only_line(line: &str) -> Option<DirEntry> {
+    // Take the four leading fields (perms, size, date, time); the rest is the name verbatim.
+    let mut fields = Vec::with_capacity(4);
+    let mut rest = line;
+    for _ in 0..4 {
+        rest = rest.trim_start();
+        let end = rest.find(' ')?;
+        fields.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let name = rest.strip_prefix(' ')?;
+    // Reject anything that isn't a file entry, such as a daemon MOTD line.
+    if !is_list_only_perms(fields[0]) || !is_list_only_date(fields[2]) {
+        return None;
+    }
+    if name.is_empty() || name == "." {
+        return None;
+    }
+    let is_dir = fields[0].starts_with('d');
+    let size = if is_dir {
+        String::new()
+    } else {
+        fields[1]
+            .replace(',', "")
+            .parse()
+            .map(fmt_dir_entry_bytes)
+            .unwrap_or_default()
+    };
+    Some(DirEntry {
+        name: name.to_owned(),
+        is_dir,
+        size,
+    })
+}
+
+/// `drwxr-xr-x`, `-rw-------`, `lrwxrwxrwx`, etc.
+fn is_list_only_perms(s: &str) -> bool {
+    s.len() == 10 && s.starts_with(['-', 'd', 'l', 'p', 's', 'c', 'b'])
+}
+
+/// `YYYY/MM/DD`
+fn is_list_only_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'/'
+        && b[7] == b'/'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
 fn fmt_dir_entry_bytes(b: u64) -> String {
     if b >= 1_073_741_824 {
         format!("{:.1}G", b as f64 / 1_073_741_824.0)
@@ -936,4 +1061,25 @@ fn fmt_dir_entry_bytes(b: u64) -> String {
 #[tauri::command]
 pub fn quit(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rsync_list_only_lines() {
+        assert!(parse_list_only_line("drwxr-xr-x          3,430 2026/10/22 10:31:00 .").is_none());
+        let e =
+            parse_list_only_line("-rw-r--r--          2,048 2026/10/14 11:36:49 my  mail").unwrap();
+        assert_eq!(
+            (e.name.as_str(), e.is_dir, e.size.as_str()),
+            ("my  mail", false, "2.0K")
+        );
+        let d =
+            parse_list_only_line("drwx------            128 2026/10/14 11:36:49 Maildir").unwrap();
+        assert_eq!((d.name.as_str(), d.is_dir), ("Maildir", true));
+        assert!(parse_list_only_line("Welcome to the backup server here").is_none());
+        assert!(parse_list_only_line("").is_none());
+    }
 }

@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod drives;
 mod format;
+mod purge;
 mod state;
 mod wipe;
 
@@ -41,6 +42,8 @@ fn main() {
             commands::start_wipe_free_space,
             commands::get_wipe_progress,
             commands::cancel_wipe,
+            commands::find_purge_targets,
+            commands::purge_path,
             commands::list_dir,
             commands::quit,
         ])

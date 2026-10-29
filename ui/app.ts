@@ -41,6 +41,7 @@ interface BackupJob {
   mode: string;
   enabled: boolean;
   exclude_caches: boolean;
+  remote_rsync_path?: string | null;
 }
 
 interface BackupConfig {
@@ -119,6 +120,17 @@ interface FormatProgress {
   finished: boolean;
   error?: string;
   log: string[];
+}
+
+interface PurgeTarget {
+  snapshot: string | null;
+  is_dir: boolean;
+}
+
+interface PurgeResult {
+  log_lines: string[];
+  purged: number;
+  failed: number;
 }
 
 interface WipeProgress {
@@ -223,6 +235,8 @@ let pendingRestoreSnapshot: string | null = null;
 let pendingRestoreJobIndices: number[] = [];
 let pendingRestoreSubpaths: string[] = [];
 let pendingRestoreDeleteExtra = false;
+let purgeJobs: BackupJob[] = [];
+let purgeFoundSubpath: string | null = null;
 
 // ── Screen routing ────────────────────────────────────────────────────────────
 
@@ -470,8 +484,14 @@ async function toggleTreeExpand(path: string): Promise<void> {
     node.loading = true;
     renderExcludesTree();
     try {
-      const fullPath = treeSource.replace(/\/$/, '') + '/' + path;
-      const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: fullPath });
+      // A bare `host:` means the remote home directory, so don't insert a slash after it.
+      const fullPath = /^[^/]+:$/.test(treeSource)
+        ? treeSource + path
+        : treeSource.replace(/\/$/, '') + '/' + path;
+      const entries = await invoke<RemoteDirEntry[]>('list_dir', {
+        path: fullPath,
+        rsyncPath: getRsyncPath(),
+      });
       node.children = entries.map((e) => ({
         name: e.name,
         path: path + '/' + e.name,
@@ -490,6 +510,23 @@ async function toggleTreeExpand(path: string): Promise<void> {
   renderExcludesTree();
 }
 
+/** Same rule as rsync (and `is_remote` in backup.rs): a colon before any slash. */
+function isRemoteSource(source: string): boolean {
+  return source.startsWith('rsync://') || /^[^/:]+:/.test(source);
+}
+
+function getRsyncPath(): string | null {
+  return (document.getElementById('job-rsync-path') as HTMLInputElement).value.trim() || null;
+}
+
+function updateRemoteFields(): void {
+  const source = (document.getElementById('job-source') as HTMLInputElement).value.trim();
+  const remote = isRemoteSource(source);
+  document.querySelectorAll<HTMLElement>('#screen-job-edit .remote-only').forEach((el) => {
+    el.style.display = remote ? '' : 'none';
+  });
+}
+
 async function loadExcludesTree(source: string, excludes: string[]): Promise<void> {
   const gen = ++treeLoadGen;
   treeSource = source.trim();
@@ -502,7 +539,10 @@ async function loadExcludesTree(source: string, excludes: string[]): Promise<voi
   if (!treeSource) return;
 
   try {
-    const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: treeSource });
+    const entries = await invoke<RemoteDirEntry[]>('list_dir', {
+      path: treeSource,
+      rsyncPath: getRsyncPath(),
+    });
     if (gen !== treeLoadGen) return;
     treeRoots = entries.map((e) => ({
       name: e.name,
@@ -530,7 +570,10 @@ async function reloadTreeSource(source: string): Promise<void> {
   renderExcludesTree();
   if (!treeSource) return;
   try {
-    const entries = await invoke<RemoteDirEntry[]>('list_dir', { path: treeSource });
+    const entries = await invoke<RemoteDirEntry[]>('list_dir', {
+      path: treeSource,
+      rsyncPath: getRsyncPath(),
+    });
     if (gen !== treeLoadGen) return;
     treeRoots = entries.map((e) => ({
       name: e.name,
@@ -687,6 +730,9 @@ async function editJob(idx: number): Promise<void> {
     idx < jobs.length ? 'Edit Job' : 'New Job';
   (document.getElementById('job-name') as HTMLInputElement).value = job?.name || '';
   (document.getElementById('job-source') as HTMLInputElement).value = job?.source || '';
+  (document.getElementById('job-rsync-path') as HTMLInputElement).value =
+    job?.remote_rsync_path || '';
+  updateRemoteFields();
   (document.getElementById('job-dest') as HTMLInputElement).value = job?.destination || '';
   (document.getElementById('job-enabled') as HTMLInputElement).checked = job?.enabled ?? true;
   (document.getElementById('job-exclude-caches') as HTMLInputElement).checked =
@@ -717,6 +763,7 @@ async function saveJob(): Promise<void> {
     mode: modeEl ? modeEl.value : 'Backup',
     enabled: (document.getElementById('job-enabled') as HTMLInputElement).checked,
     exclude_caches: (document.getElementById('job-exclude-caches') as HTMLInputElement).checked,
+    remote_rsync_path: getRsyncPath(),
   };
 
   if (editingJobIdx !== null && editingJobIdx < config.jobs.length) {
@@ -1121,6 +1168,165 @@ async function doRestore(): Promise<void> {
   startBackupPoll();
 }
 
+// ── Purge screen ──────────────────────────────────────────────────────────────
+
+/** Path typed by the user, made relative to the job's source folder. */
+function purgeSubpath(): string {
+  const job = purgeJobs[purgeJobIdx()];
+  let path = (document.getElementById('purge-path') as HTMLInputElement).value.trim();
+  const source = job?.source.replace(/\/+$/, '') ?? '';
+  if (source && path.startsWith(source + '/')) path = path.slice(source.length);
+  return path
+    .split('/')
+    .filter((p) => p !== '')
+    .join('/');
+}
+
+function purgeJobIdx(): number {
+  return parseInt((document.getElementById('purge-job') as HTMLSelectElement).value, 10);
+}
+
+/** Anchored rsync exclude pattern matching exactly this path within the job. */
+function purgeExcludePattern(subpath: string): string {
+  return '/' + subpath.replace(/[*?[\\]/g, '\\$&');
+}
+
+function resetPurgeFound(): void {
+  purgeFoundSubpath = null;
+  (document.getElementById('purge-found-card') as HTMLElement).style.display = 'none';
+  (document.getElementById('purge-confirm-input') as HTMLInputElement).value = '';
+  setError('purge-error', '');
+  validatePurge();
+}
+
+async function goToPurge(): Promise<void> {
+  const status = await invoke<AppStatus>('get_status');
+  purgeJobs = status.config?.jobs || [];
+  const select = document.getElementById('purge-job') as HTMLSelectElement;
+  select.innerHTML = purgeJobs
+    .map((j, i) => `<option value="${i}">${escHtml(j.name)} (${escHtml(j.source)})</option>`)
+    .join('');
+  (document.getElementById('purge-path') as HTMLInputElement).value = '';
+  (document.getElementById('purge-log') as HTMLElement).style.display = 'none';
+  (document.getElementById('btn-purge-wipe') as HTMLElement).style.display = 'none';
+  (document.getElementById('btn-do-purge') as HTMLElement).style.display = '';
+  setPurgeInputsDisabled(false);
+  resetPurgeFound();
+  showScreen('purge');
+}
+
+function setPurgeInputsDisabled(disabled: boolean): void {
+  ['purge-job', 'purge-path', 'btn-purge-find'].forEach((id) => {
+    (document.getElementById(id) as HTMLInputElement).disabled = disabled;
+  });
+}
+
+async function findPurgeTargets(): Promise<void> {
+  resetPurgeFound();
+  const subpath = purgeSubpath();
+  if (!subpath) {
+    setError('purge-error', 'Enter a path inside the job to purge.');
+    return;
+  }
+  const btn = document.getElementById('btn-purge-find') as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+  try {
+    const targets = await invoke<PurgeTarget[]>('find_purge_targets', {
+      jobIdx: purgeJobIdx(),
+      subpath,
+    });
+    if (targets.length === 0) {
+      setError('purge-error', `"${subpath}" was not found in any backup on this drive.`);
+      return;
+    }
+    purgeFoundSubpath = subpath;
+    const kind = targets.some((t) => t.is_dir) ? 'folder' : 'file';
+    document.getElementById('purge-found-list')!.innerHTML =
+      `<p class="muted">The ${kind} <code>${escHtml(subpath)}</code> exists in ${targets.length} ` +
+      `location${targets.length === 1 ? '' : 's'}:</p><ul>` +
+      targets
+        .map((t) => `<li>${t.snapshot ? snapshotLabel(t.snapshot) : 'Current backup'}</li>`)
+        .join('') +
+      '</ul>';
+    const alreadyExcluded = purgeJobs[purgeJobIdx()].excludes.includes(
+      purgeExcludePattern(subpath)
+    );
+    (document.getElementById('purge-exclude-option') as HTMLElement).style.display = alreadyExcluded
+      ? 'none'
+      : '';
+    (document.getElementById('purge-add-exclude') as HTMLInputElement).checked = !alreadyExcluded;
+    (document.getElementById('purge-found-card') as HTMLElement).style.display = '';
+  } catch (e) {
+    setError('purge-error', String(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Find in Backups';
+    validatePurge();
+  }
+}
+
+function validatePurge(): void {
+  const confirm = (document.getElementById('purge-confirm-input') as HTMLInputElement).value;
+  (document.getElementById('btn-do-purge') as HTMLButtonElement).disabled = !(
+    purgeFoundSubpath !== null && confirm === 'PURGE'
+  );
+}
+
+async function doPurge(): Promise<void> {
+  const subpath = purgeFoundSubpath;
+  if (subpath === null) return;
+  const jobIdx = purgeJobIdx();
+  const addExclude = (document.getElementById('purge-add-exclude') as HTMLInputElement).checked;
+  const purgeBtn = document.getElementById('btn-do-purge') as HTMLButtonElement;
+  const backBtn = document.getElementById('btn-purge-back') as HTMLButtonElement;
+  purgeBtn.disabled = true;
+  purgeBtn.textContent = 'Purging…';
+  backBtn.disabled = true;
+  setPurgeInputsDisabled(true);
+  setError('purge-error', '');
+
+  const logLines: string[] = [];
+  try {
+    const result = await invoke<PurgeResult>('purge_path', { jobIdx, subpath });
+    logLines.push(...result.log_lines);
+    if (result.failed > 0) {
+      setError(
+        'purge-error',
+        `Failed in ${result.failed} location${result.failed === 1 ? '' : 's'} — see log above.`
+      );
+    }
+  } catch (e) {
+    setError('purge-error', String(e));
+  }
+
+  if (addExclude) {
+    try {
+      const status = await invoke<AppStatus>('get_status');
+      const config = status.config!;
+      const pattern = purgeExcludePattern(subpath);
+      if (!config.jobs[jobIdx].excludes.includes(pattern)) {
+        config.jobs[jobIdx].excludes.push(pattern);
+        await invoke('update_config', { config });
+        await invoke('save_config');
+      }
+      logLines.push(`Added exclude ${pattern} to job "${config.jobs[jobIdx].name}"`);
+    } catch (e) {
+      logLines.push(`Could not add exclude: ${e}`);
+    }
+  }
+
+  const logEl = document.getElementById('purge-log')!;
+  logEl.innerHTML = logLines.map((l) => `<div>${escHtml(l)}</div>`).join('');
+  logEl.style.display = '';
+  (document.getElementById('purge-found-card') as HTMLElement).style.display = 'none';
+  purgeFoundSubpath = null;
+  purgeBtn.textContent = 'Purge Permanently';
+  purgeBtn.style.display = 'none';
+  backBtn.disabled = false;
+  (document.getElementById('btn-purge-wipe') as HTMLElement).style.display = '';
+}
+
 // ── Format Setup screen ───────────────────────────────────────────────────────
 
 async function enterFormatSetup(
@@ -1496,6 +1702,7 @@ document.getElementById('btn-add-job')!.addEventListener('click', addJob);
 document.getElementById('btn-save-config')!.addEventListener('click', saveConfig);
 document.getElementById('btn-wipe-free-space')!.addEventListener('click', startWipe);
 document.getElementById('btn-restore')!.addEventListener('click', goToRestore);
+document.getElementById('btn-purge')!.addEventListener('click', goToPurge);
 document.getElementById('btn-next')!.addEventListener('click', goToPreview);
 
 document.getElementById('btn-job-cancel')!.addEventListener('click', async () => {
@@ -1509,6 +1716,10 @@ document.getElementById('job-source')!.addEventListener('blur', () => {
   if (source !== treeSource) {
     void reloadTreeSource(source);
   }
+});
+document.getElementById('job-source')!.addEventListener('input', updateRemoteFields);
+document.getElementById('job-rsync-path')!.addEventListener('change', () => {
+  if (isRemoteSource(treeSource)) void reloadTreeSource(treeSource);
 });
 document.getElementById('job-excludes-manual')!.addEventListener('input', () => {
   renderExcludesTree();
@@ -1526,6 +1737,20 @@ document
   .getElementById('btn-restore-preview-back')!
   .addEventListener('click', () => showScreen('restore'));
 document.getElementById('btn-restore-preview-proceed')!.addEventListener('click', doRestore);
+
+document.getElementById('purge-job')!.addEventListener('change', resetPurgeFound);
+document.getElementById('purge-path')!.addEventListener('input', resetPurgeFound);
+document.getElementById('purge-path')!.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key === 'Enter') findPurgeTargets();
+});
+document.getElementById('btn-purge-find')!.addEventListener('click', findPurgeTargets);
+document.getElementById('purge-confirm-input')!.addEventListener('input', validatePurge);
+document.getElementById('btn-do-purge')!.addEventListener('click', doPurge);
+document.getElementById('btn-purge-wipe')!.addEventListener('click', startWipe);
+document.getElementById('btn-purge-back')!.addEventListener('click', async () => {
+  const status = await invoke<AppStatus>('get_status');
+  enterConfig(status.mount_point!, status.config!);
+});
 
 document.getElementById('btn-preview-cancel')!.addEventListener('click', async () => {
   const status = await invoke<AppStatus>('get_status');

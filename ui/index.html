@@ -81,6 +81,7 @@
           <span id="unsaved-indicator" style="display: none">Unsaved changes</span>
           <button id="btn-wipe-free-space" class="danger-outline">Wipe Free Space…</button>
           <button id="btn-restore" class="danger-outline">Restore from Backup…</button>
+          <button id="btn-purge" class="danger-outline">Purge from Backups…</button>
           <button id="btn-next" class="primary">Begin Backup…</button>
         </div>
         <div id="config-error" class="error-text" style="display: none"></div>
@@ -94,7 +95,15 @@
             <label>Name</label>
             <input type="text" id="job-name" placeholder="e.g. Home" />
             <label>Source folder</label>
-            <input type="text" id="job-source" placeholder="/home/user" />
+            <input type="text" id="job-source" placeholder="/home/user or user@host:/var/mail" />
+            <label for="job-rsync-path" class="remote-only">Remote rsync command</label>
+            <span class="field-with-desc remote-only">
+              <input type="text" id="job-rsync-path" placeholder="rsync" />
+              <span class="radio-desc"
+                >Run on the server instead of <code>rsync</code>, e.g.
+                <code>doas -n -u vmail /usr/bin/rsync</code>. Must not prompt for a password.</span
+              >
+            </span>
             <label>Destination (on drive)</label>
             <input type="text" id="job-dest" placeholder="home" />
             <label>Mode</label>
@@ -280,6 +289,74 @@
         <div class="btn-row">
           <button id="btn-restore-preview-back">← Change Settings</button>
           <button id="btn-restore-preview-proceed" class="danger">Restore from Backup</button>
+        </div>
+      </div>
+
+      <!-- Purge -->
+      <div id="screen-purge" class="screen">
+        <div class="screen-header">
+          <h2>Purge from Backups</h2>
+        </div>
+
+        <div class="banner danger">
+          <strong>⚠ This permanently deletes data from every backup on this drive.</strong>
+          The path is removed from the current backup and from every snapshot. It cannot be restored
+          afterwards.
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <label for="purge-job">Job</label>
+            <select id="purge-job"></select>
+            <label for="purge-path">Path</label>
+            <span class="field-with-desc">
+              <input
+                type="text"
+                id="purge-path"
+                placeholder="Documents/secret.pdf"
+                autocomplete="off"
+              />
+              <span class="radio-desc">Relative to the job's source folder.</span>
+            </span>
+          </div>
+          <div class="btn-row">
+            <button id="btn-purge-find">Find in Backups</button>
+          </div>
+        </div>
+
+        <div class="card" id="purge-found-card" style="display: none">
+          <div class="section-label">Found in</div>
+          <div id="purge-found-list"></div>
+          <label class="radio-option" id="purge-exclude-option">
+            <input type="checkbox" id="purge-add-exclude" checked />
+            <span>
+              <strong>Exclude this path from future backups</strong>
+              <span class="radio-desc"
+                >Otherwise the next backup copies it again if it still exists on your
+                computer.</span
+              >
+            </span>
+          </label>
+          <div class="form-grid">
+            <label>Confirm</label>
+            <input
+              type="text"
+              id="purge-confirm-input"
+              placeholder='Type "PURGE" to confirm'
+              autocomplete="off"
+            />
+          </div>
+        </div>
+
+        <div id="purge-log" class="log-box" style="display: none"></div>
+        <div id="purge-error" class="error-text" style="display: none"></div>
+
+        <div class="btn-row" id="purge-btn-row">
+          <button id="btn-purge-back">← Back</button>
+          <button id="btn-purge-wipe" class="danger-outline" style="display: none">
+            Wipe Free Space…
+          </button>
+          <button id="btn-do-purge" class="danger" disabled>Purge Permanently</button>
         </div>
       </div>
 

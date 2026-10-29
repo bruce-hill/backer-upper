@@ -24,6 +24,12 @@
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
+/* Use % rather than vh: vh isn't adjusted for the CSS zoom applied to <html>,
+   so 100vh would overflow the window whenever zoom != 1. */
+html {
+  height: 100%;
+}
+
 body {
   font-family:
     system-ui,
@@ -32,7 +38,7 @@ body {
   font-size: 16px;
   background: var(--bg);
   color: var(--text);
-  height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -470,6 +476,15 @@ textarea {
 .checkbox-with-desc input {
   margin-top: 3px;
   flex-shrink: 0;
+}
+.field-with-desc {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field-with-desc .radio-desc {
+  font-size: 14px;
+  color: var(--text-muted);
 }
 
 /* Jobs table */

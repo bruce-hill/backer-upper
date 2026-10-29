@@ -21,6 +21,10 @@ pub struct SyncJob {
     /// Skip directories tagged with a CACHEDIR.TAG file (Cache Directory Tagging Specification).
     #[serde(default = "default_true")]
     pub exclude_caches: bool,
+    /// Command run on the remote host in place of `rsync` (passed as `--rsync-path`), e.g.
+    /// `doas -n -u vmail /usr/bin/rsync` to read files the login user can't. Remote sources only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_rsync_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -42,6 +46,7 @@ impl SyncJob {
             mode: SyncMode::Backup,
             enabled: true,
             exclude_caches: true,
+            remote_rsync_path: None,
         }
     }
 }
